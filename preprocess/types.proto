@@ -1,0 +1,91 @@
+syntax = "proto3";
+// -*- coding: utf-8 -*-
+// import "google/protobuf/descriptor.proto";
+
+package preprocess;
+
+// Existing messages
+message FloatVector {
+    float x = 1;
+    float y = 2;
+}
+
+message BBox {
+    float left = 1;
+    float top = 2;
+    float right = 3;
+    float bottom = 4;
+}
+
+message HandLandmark {
+ enum LandmarkType {
+   WRIST = 0;
+   THUMB_CMC = 1; 
+   THUMB_MCP = 2;
+   THUMB_IP = 3;
+   THUMB_TIP = 4;
+   INDEX_FINGER_MCP = 5;
+   INDEX_FINGER_PIP = 6;
+   INDEX_FINGER_DIP = 7;
+   INDEX_FINGER_TIP = 8;
+   MIDDLE_FINGER_MCP = 9;
+   MIDDLE_FINGER_PIP = 10;
+   MIDDLE_FINGER_DIP = 11;
+   MIDDLE_FINGER_TIP = 12;
+   RING_FINGER_MCP = 13;
+   RING_FINGER_PIP = 14;
+   RING_FINGER_DIP = 15;
+   RING_FINGER_TIP = 16;
+   PINKY_MCP = 17;
+   PINKY_PIP = 18;
+   PINKY_DIP = 19;
+   PINKY_TIP = 20;
+   }
+   LandmarkType type = 1;
+   float x = 2;
+   float y = 3;
+}
+
+message HandPose {
+    repeated HandLandmark landmarks = 1;
+}
+
+message HandDetection {
+    BBox bbox = 1;
+    float score = 2;
+    enum HandState {
+        NO_CONTACT = 0;
+        SELF_CONTACT = 1;
+        ANOTHER_PERSON = 2;
+        PORTABLE_OBJECT = 3;
+        STATIONARY_OBJECT = 4;
+    }
+    HandState state = 3;
+    FloatVector object_offset = 4;
+    enum HandSide {
+        LEFT = 0;
+        RIGHT = 1;
+    }
+    HandSide side = 5;
+}
+
+
+message ObjectDetection {
+    BBox bbox = 1;
+    float score = 2;
+}
+
+// New message
+message GazePoint {
+    float x = 1;
+    float y = 2;
+}
+
+message Detections {
+    string video_id = 1;
+    int32 frame_number = 2;
+    repeated HandDetection hands = 3;
+    repeated ObjectDetection objects = 4;
+    // repeated HandPose hand_poses = 5;
+    GazePoint gaze = 5;
+}
