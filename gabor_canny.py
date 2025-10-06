@@ -9,7 +9,7 @@ import image_processing
 
 # parser = argparse.ArgumentParser()
 
-datasets_path = os.path.expanduser("~/Desktop/MasterThesis/data/datasets")
+datasets_path = os.path.expanduser("../data/datasets")
 map_file = open(os.path.join(datasets_path,"Robofarmer-II/video_participants_acro.json"), "r")
 video_partic_map = json.load(map_file)
 inaactive_path = os.path.join(datasets_path, "Robofarmer-II/inactive_images/val_images")

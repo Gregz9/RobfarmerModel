@@ -12,6 +12,9 @@ import json
 import pprint
 from tabulate import tabulate
 from tqdm import tqdm
+import time
+import random
+
 
 FLANN_INDEX_TREE = 1
 DATASET_BASE_PATH = "../data/datasets/Robofarmer"
@@ -28,7 +31,7 @@ def inactive_image_structure(df: pd.DataFrame):
     seen_pairs = set()
 
     for col3_val, group in df.groupby(df.columns[2]):
-        inactive_images[col3_val] = {}
+        inactive_images[col3_val] = []
         local_idx = 0
 
         for _, row in group.iterrows():
@@ -47,29 +50,56 @@ def inactive_image_structure(df: pd.DataFrame):
             else:
                 bbox_coords = col4_val
 
-            inactive_images[col3_val][local_idx] = {
-                "v_id": col1_val,
-                "f_id": col2_val,
-                "bbox": {
-                    0: bbox_coords[0],
-                    1: bbox_coords[1],
-                    2: bbox_coords[2],
-                    3: bbox_coords[3],
-                },
-            }
+            inactive_images[col3_val].append(
+                {
+                    "v_id": col1_val,
+                    "f_id": col2_val,
+                    "bbox": [
+                        bbox_coords[0],
+                        bbox_coords[1],
+                        bbox_coords[2],
+                        bbox_coords[3],
+                    ],
+                }
+            )
             local_idx += 1
 
     return inactive_images
 
 
-def clips_structure(df, verbs, nouns):
+def clips_structure(df, verbs, nouns, dataset_name):
     clips = []
     # Remove the outer loop since we want one entry per row
     local_idx = 0
+    # NOTE: Load corresponding gaze recordings
+    tmp_vid = ""
+    gaze_data = []
+    timestamps = []
     for idx, row in df.iterrows():
+        if row.iloc[1] != tmp_vid:
+            gaze_path = os.path.expanduser(
+                f"../data/datasets/{dataset_name}/videos/{row.iloc[1]}/gazedata"
+            )
+            gaze_data = load_jsonl_data(gaze_path)
+            gaze_data = list(
+                filter(
+                    lambda x: len(x["data"]) > 0 and "gaze2d" in x["data"], gaze_data
+                )
+            )
+            timestamps = [data["timestamp"] for data in gaze_data]
+
+            tmp_vid = row.iloc[1]
+
+        # NOTE: Gather al gaze points, from start to finish of action
+        gaze_points = [
+            gaze_data[findTime(i / 25, timestamps)]["data"]["gaze2d"]
+            for i in range(row.iloc[2], row.iloc[3] + 1)
+        ]
+
         clips.append(
             {
                 "v_id": row.iloc[1],
+                "p_id": row.iloc[7],
                 "start": row.iloc[2],
                 "stop": row.iloc[3],
                 "verb": [
@@ -79,6 +109,7 @@ def clips_structure(df, verbs, nouns):
                     idx for idx, name in nouns["nouns"].items() if name == row.iloc[5]
                 ][0],
                 "uid": row.iloc[0],
+                "gaze_points": gaze_points,
             }
         )
         local_idx += 1
@@ -99,17 +130,29 @@ def image_structure(df, verbs, nouns):
         else:
             bbox_coords = row.iloc[4]
 
+        contact_coords = []
+        if row.iloc[5] != "":
+            contact_str = str(row.iloc[5]).replace(" ", "")
+
+            pairs = contact_str.replace("(", "").replace(")", "").split(",")
+
+            for i in range(0, len(pairs), 2):
+                if i + 1 < len(pairs):
+                    contact_coords.append([int(pairs[i]), int(pairs[i + 1])])
+
         images_data.append(
             {
-                "image": {0: row.iloc[1].replace(" ", "")},
-                "shape": {
-                    0: bbox_coords[2] - bbox_coords[0],
-                    1: bbox_coords[3] - bbox_coords[1],
-                },
-                "verb": row.iloc[2],
-                "noun": row.iloc[3],
+                "image": [row.iloc[1].replace(" ", "")],
+                "shape": [
+                    bbox_coords[2] - bbox_coords[0],
+                    bbox_coords[3] - bbox_coords[1],
+                ],
+                "verb": verbs.index(row.iloc[2]),
+                "noun": nouns.index(row.iloc[3]),
                 "uid": row.iloc[0],
-                "points": {},
+                "points": contact_coords,
+                "video_id": row.iloc[-2],
+                "participant_id": row.iloc[-1],
             }
         )
         local_idx += 1
@@ -118,10 +161,11 @@ def image_structure(df, verbs, nouns):
 
 
 class DataHandler:
-    def __init__(self, filepath, callback=None):
+    def __init__(self, filepath, dataset_name, callback=None):
         self.filepath = filepath
         self.last_modified = os.path.getmtime(filepath)
         # self.data = self.read_data()
+        self.dataset_name = dataset_name
         self.read_data()
         self._toJson()
         self.callback = callback
@@ -140,15 +184,46 @@ class DataHandler:
             self.thread.join()
 
     def read_data(self):
+        import string
+
+        df = pd.DataFrame()
+        action_set = []
         df = pd.read_csv(
             self.filepath,
             dtype={
                 "uid": "int",
-                "start_movement": "int",
                 "start_action": "int",
                 "stop_action": "int",
+                "contact_points": "str",
             },
         )
+        if self.dataset_name == "Robofarmer-II":
+            actions = df["action"].unique().tolist()
+
+            # re.sub(r'\\u001b', '', text)
+            action_set = list(
+                set(
+                    [
+                        "".join(c for c in action if c in string.printable)
+                        .strip("[")
+                        .strip()
+                        for action in actions
+                    ]
+                )
+            )
+
+        elif self.dataset_name == "Robofarmer":
+
+            # NOTE: In the final file, the order of verbs and nouns may change for each time the file is re-generated
+            action_set = [
+                "monitoring",
+                "harvesting",
+                "adjusting",
+                "cleaning",
+                "moving",
+                "pruning",
+                "cutting",
+            ]
 
         self.data = df.groupby("uid").filter(
             lambda x: x["participant_id"].notna().all()
@@ -157,11 +232,18 @@ class DataHandler:
             and x["video_id"].ne("").all()
             and x["bbox_coords"].notna().all()
             and x["bbox_coords"].ne("-, -, -, -").all()
+            and x["action"].notna().all()
+            and x["action"].isin(action_set).all()
+            and x["action"].ne("cut berry").all()
+            and x["action"].ne("move pot").all()
+            and x["action"].ne("turn pot").all()
         )
 
     def dumpJsonAnnotation(self):
 
-        with open("../data/new_annotation.json", "w") as f:
+        with open(
+            os.path.join("../data/datasets", self.dataset_name, "annotation.json"), "w"
+        ) as f:
             json.dump(self.annotation, f, indent=4)
 
     def _toJson(self):
@@ -175,24 +257,71 @@ class DataHandler:
         nouns_list = []
         train_idxs = []
         test_idxs = []
+
+        counts_size = self.data.groupby('video_id').size()
+        print("Counts using .size():")
+        # print(counts_size)
+        total_instances = sum([v for k,v in counts_size.items()])
+        print(total_instances)
+        print(total_instances * 0.68)
+        
+        video_names = list(counts_size.keys())
+
+        train_sum = 0
+        train_vids = []
+        while(True):
+            video = random.choice(video_names)
+            train_sum += counts_size[video]
+            train_vids.append(video) 
+            counts_size.pop(video)
+            if train_sum > int(total_instances * 0.67):
+                break
+
+        val_sum = 0
+        val_vids = []
+        while(True):
+            video = random.choice(video_names)
+            val_sum += counts_size[video]
+            val_vids.append(video)
+            counts_size.pop(video)
+            if val_sum > int(total_instances * 0.15):
+                break
+        
+        test_vids = list(counts_size.keys())
+        test_sum = sum(list(counts_size.values()))
+
+        print(train_sum)
+        print(val_sum)
+        print(test_sum)
+        exit() 
+
+        # Perform approximately 70-15-15 split into train - val - test
+
+        # TODO: Train-val-test splitting needs reworking ASAP
         for v_name in video_names:
             data = self.data[self.data["video_id"] == v_name]
             num_rows = data.shape[0]
             uids = data["uid"].to_list()
 
-            train_uids, temp_uids = train_test_split(
-                uids,
-                test_size=0.3,
-                random_state=737,
-                shuffle=False,
-            )
+            if len(uids) > 3:
+                train_uids, temp_uids = train_test_split(
+                    uids,
+                    test_size=0.3,
+                    random_state=737,
+                    shuffle=False,
+                )
 
-            val_uids, test_uids = train_test_split(
-                temp_uids,
-                test_size=0.25,
-                random_state=737,
-                shuffle=False,
-            )
+                val_uids, test_uids = train_test_split(
+                    temp_uids,
+                    test_size=0.5,
+                    random_state=737,
+                    shuffle=False,
+                )
+            else:
+                train_uids = uids
+                val_uids = []
+                test_uids = []
+
             test_uids = val_uids
             train_idxs.extend(train_uids)
             test_idxs.extend(test_uids)
@@ -200,7 +329,7 @@ class DataHandler:
             actions = data["action"].unique()
             verbs_list.extend(actions)
             # print(actions)
-            plants = data["plant"].unique()
+            plants = data["noun"].unique()
             nouns_list.extend(plants)
 
         verbs_list = list(set(verbs_list))
@@ -215,29 +344,58 @@ class DataHandler:
         for j in range(len(nouns_list)):
             nouns_inner[j] = nouns_list[j]
         nouns = {"nouns": nouns_inner}
-
-        inactive_noun = self.data[["video_id", "inactive", "plant", "bbox_coords"]]
+        inactive_noun = self.data[
+            ["video_id", "inactive", "noun", "bbox_coords", "contact_points"]
+        ]
         inactive_images = inactive_image_structure(inactive_noun)
 
         clips = self.data[
-            ["uid", "video_id", "start_movement", "stop_action", "action", "plant"]
+            [
+                "uid",
+                "video_id",
+                "start_action",
+                "stop_action",
+                "action",
+                "noun",
+                "contact_points",
+                "participant_id",
+            ]
         ]
 
         train_df = clips[clips["uid"].isin(train_idxs)]
         test_df = clips[clips["uid"].isin(test_idxs)]
 
-        train_clips = clips_structure(train_df, verbs, nouns)
-        test_clips = clips_structure(test_df, verbs, nouns)
+        # NOTE: Filtering out instances without contact point annotation
+        test_df = test_df.groupby("uid").filter(
+            lambda x: x["contact_points"].notna().all()
+            and x["contact_points"].ne("").all()
+        )
+
+        train_clips = clips_structure(train_df, verbs, nouns, self.dataset_name)
+        test_clips = clips_structure(test_df, verbs, nouns, self.dataset_name)
 
         image_data = self.data[
-            ["uid", "inactive_frame_name", "action", "plant", "bbox_coords"]
+            [
+                "uid",
+                "inactive_frame_name",
+                "action",
+                "noun",
+                "bbox_coords",
+                "contact_points",
+                "video_id",
+                "participant_id",
+            ]
         ]
 
         train_part = image_data[image_data["uid"].isin(train_idxs)]
         test_part = image_data[image_data["uid"].isin(test_idxs)]
+        test_part = test_part.groupby("uid").filter(
+            lambda x: x["contact_points"].notna().all()
+            and x["contact_points"].ne("").all()
+        )
 
-        train_images = image_structure(train_part, verbs, nouns)
-        test_images = image_structure(test_part, verbs, nouns)
+        train_images = image_structure(train_part, verbs_list, nouns_list)
+        test_images = image_structure(test_part, verbs_list, nouns_list)
 
         self.annotation = {
             "verbs": verbs_list,
@@ -760,7 +918,7 @@ def findTime(curr_time: float, times: list[float]) -> int:
 def findGazePoint(frame_number, gaze_data):
 
     t_const = 1 / 25
-    current_time = frame_number // 2 * t_const
+    current_time = frame_number * t_const
     time_idx = 0
     times = []
     coords = []

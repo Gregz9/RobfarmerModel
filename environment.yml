@@ -1,0 +1,31 @@
+name: samclip
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  # - pytorch-mutex=1.0=cuda
+  # - pytorch-cuda=12.4
+  - pytorch=2.5.1
+  - torchaudio=2.5.1
+  - cuda-runtime=12.4.1
+  - cuda-opencl=12.4.127
+  - cuda-nvtx=12.4.127
+  - cuda-nvrtc=12.4.127
+  - cuda-libraries=12.4.1
+  - cuda-cupti=12.4.127
+  - cuda-cudart=12.4.127
+  - libnvjpeg=12.3.1.117
+  - libnvjitlink=12.4.127
+  - libnvfatbin=12.4.127
+  - libnpp=12.2.5.30
+  - libcusparse=12.3.1.170
+  - libcusolver=11.6.1.9
+  - libcurand=10.3.5.147
+  - libcufile=1.9.1.3
+  - libcufft=11.2.1.3
+  - libcublas=12.4.5.8
+  - ffmpeg=4.3
+  - pip
+  - pip:
+    - -r requirements.txt

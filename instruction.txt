@@ -1,0 +1,46 @@
+# Building the container using the dockerfile with name:tag
+$ podman build -t cuda_img:1.0 -f containerfile . 
+
+# Creating the nvidia-container-toolkit configuration
+$ nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+
+# To run the container 
+$ podman run --rm -it --device nvidia.com/gpu=all --name cuda cuda_img:1.0 bash
+// NOTE: the "--rm" flag will automatically remove the container or make it deprecated upon exit
+
+# To run the container in a detached mode 
+$ podman run -dit --shm-size=2g --device nvidia.com/gpu=0 --name robofarmer -v ~/container_save:/path/in/container localhost/robofarmer:imported
+
+# To export the list off all packages used in the current conda environment
+$ conda list --export > requirements.txt
+
+# To create the conda environment using conda 
+$ conda env create -f environment.yml
+
+# In order to generate heatmaps using a trained model 
+$ python viz.py --dset epic --load checkpoints/ --inp ../../data/datasets/Robofarmer/inactive_images --out ../../datasets/Robofarmer/visualizations/
+
+$  python viz.py --dset epic --load ../../data/checkpoints/150520252225_100_epochs_base_model/base_model_best_acc.pt --inp ../../data/datasets/Robofarmer/inactive_images/STBR_10 --out ../../data/datasets/Robofarmer/visualizations/STBR_10/base_10
+
+# Training of the model
+$ python train.py --batch_size <size> --max_epochs <epochs> --dset epic
+
+# Generating new annotation.json using Annotation.csv 
+$ 
+
+# Running evaluation using heatmaps 
+$ python eval_new.py --dset epic --batch_size 4 --load ../../data/checkpoints/<model_param_dir>/<model_params>.pt 
+
+# Running detection of hands in videos with ubuntu16 image. Starting the docker container: 
+$ docker run --name handobj -d -it --gpus all <image_name> 
+
+# Executing the container 
+$ docker exec -it handobj bash
+
+# Activating the conda environment inside the container
+$ conda activate handobj
+
+# Executing the detection model 
+$ CUDA_VISIBLE_DEVICES=0 python demo_raw.py --cuda --checkepoch=8 --checkpoint=132028 
+
+# In order to extract the gaze information data, use the gaze_correction code. To create the general file with structure supporting data from detection of hands, run "create_date.py"
