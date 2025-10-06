@@ -6,7 +6,7 @@ dependencies:
   - python=3.12
   # - pytorch-mutex=1.0=cuda
   # - pytorch-cuda=12.4
-  - pytorch=2.5.1
+  #- pytorch=2.5.1
   #- torchaudio=2.5.1
   - cuda-runtime=12.4.1
   - cuda-opencl=12.4.127
