@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxtst6 \
     libxi6 \
     libglib2.0-0 \
-    #libgl1-mesa-glx \
+    libgl1-mesa-dev \
     nfs-common \
     libopenblas-dev \
     python3-all-dev \
@@ -127,8 +127,6 @@ COPY Robofarmer-II.tar.gz $WORKDIR/data/datasets
 # UNPACK The dataset
 RUN cd data/datasets && tar -xzvf Robofarmer-II.tar.gz
 
-# Install additional OpenGL libraries for cv2
-RUN apt-get update && apt-get install -y libgl1-mesa-dev libglib2.0-0 && rm -rf /var/lib/apt/lists/*
 
 # RUN scripts to create dataset structure and annotation file
 # RUN cd /app/src && conda run -n samclip python create_robofarmer2.py
