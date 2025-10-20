@@ -16,6 +16,13 @@ import logging
 import subprocess
 from datetime import datetime
 import json
+from sklearn.metrics import (
+    confusion_matrix,
+    f1_score,
+    recall_score,
+    precision_score,
+    classification_report,
+)
 
 from interaction_hotspots.models import rnn, gaze_rnn, cons_rnn, backbones
 from utils import util
@@ -115,7 +122,78 @@ loss_file = os.path.join(
 )
 
 logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler(sys.stdout))
+
+
+def calculate_classification_metrics(all_preds, all_targets, num_classes=None):
+    """
+    Calculate confusion matrix, F1-score, Recall, and Precision
+
+    Args:
+        all_preds: List or array of predicted class indices
+        all_targets: List or array of target class indices
+        num_classes: Number of classes for confusion matrix
+
+    Returns:
+        Dictionary containing all metrics
+    """
+    if len(all_preds) == 0 or len(all_targets) == 0:
+        return {}
+
+    all_preds = np.array(all_preds)
+    all_targets = np.array(all_targets)
+
+    # Calculate confusion matrix
+    if num_classes is None:
+        num_classes = max(max(all_preds), max(all_targets)) + 1
+
+    cm = confusion_matrix(all_targets, all_preds, labels=list(range(num_classes)))
+
+    # Calculate metrics with different averaging strategies
+    f1_macro = f1_score(all_targets, all_preds, average="macro", zero_division=0)
+    f1_micro = f1_score(all_targets, all_preds, average="micro", zero_division=0)
+    f1_weighted = f1_score(all_targets, all_preds, average="weighted", zero_division=0)
+
+    recall_macro = recall_score(
+        all_targets, all_preds, average="macro", zero_division=0
+    )
+    recall_micro = recall_score(
+        all_targets, all_preds, average="micro", zero_division=0
+    )
+    recall_weighted = recall_score(
+        all_targets, all_preds, average="weighted", zero_division=0
+    )
+
+    precision_macro = precision_score(
+        all_targets, all_preds, average="macro", zero_division=0
+    )
+    precision_micro = precision_score(
+        all_targets, all_preds, average="micro", zero_division=0
+    )
+    precision_weighted = precision_score(
+        all_targets, all_preds, average="weighted", zero_division=0
+    )
+
+    # Calculate accuracy
+    accuracy = np.mean(all_preds == all_targets)
+
+    return {
+        "confusion_matrix": cm.tolist(),
+        "f1_macro": f1_macro,
+        "f1_micro": f1_micro,
+        "f1_weighted": f1_weighted,
+        "recall_macro": recall_macro,
+        "recall_micro": recall_micro,
+        "recall_weighted": recall_weighted,
+        "precision_macro": precision_macro,
+        "precision_micro": precision_micro,
+        "precision_weighted": precision_weighted,
+        "accuracy": accuracy,
+        "classification_report": classification_report(
+            all_targets, all_preds, zero_division=0
+        ),
+    }
 
 
 def save_model(epoch, model, optimizer, checkpoint_path, suffix="loss"):
@@ -220,6 +298,10 @@ def train(epoch, writer, loader, class_weights=None) -> LossMeters:
     loss_meters = collections.defaultdict(lambda: tnt.meter.MovingAverageValueMeter(20))
     avg_acc = 0
 
+    # Collect predictions and targets for metrics calculation
+    all_predictions = []
+    all_targets = []
+
     for batch in loader:
         batch = util.batch_cuda(batch)
         pred, loss_dict = net(batch, class_weights=class_weights)
@@ -235,6 +317,10 @@ def train(epoch, writer, loader, class_weights=None) -> LossMeters:
         batch_acc = correct / pred.shape[0]
         avg_acc += batch_acc
         loss_meters["bacc %"].add(batch_acc.item())
+
+        # Collect predictions and targets for metric calculation
+        all_predictions.extend(pred_idx.cpu().numpy().tolist())
+        all_targets.extend(batch["verb"].cpu().numpy().tolist())
 
         for k, v in loss_dict.items():
             loss_meters[k].add(v.item())
@@ -265,6 +351,23 @@ def train(epoch, writer, loader, class_weights=None) -> LossMeters:
     writer.add_scalar("Avg. Class Loss", loss_meters["cls_loss"].value()[0], epoch)
     writer.add_scalar("Avg. Ant. Loss", loss_meters["ant_loss"].value()[0], epoch)
 
+    # Calculate and log classification metrics
+    metrics = calculate_classification_metrics(all_predictions, all_targets)
+    if metrics:
+        writer.add_scalar("Train F1 Macro", metrics["f1_macro"], epoch)
+        writer.add_scalar("Train F1 Micro", metrics["f1_micro"], epoch)
+        writer.add_scalar("Train F1 Weighted", metrics["f1_weighted"], epoch)
+        writer.add_scalar("Train Recall Macro", metrics["recall_macro"], epoch)
+        writer.add_scalar("Train Precision Macro", metrics["precision_macro"], epoch)
+
+        # Store metrics in loss_meters for JSON output
+        loss_meters["f1_macro"].add(metrics["f1_macro"])
+        loss_meters["f1_micro"].add(metrics["f1_micro"])
+        loss_meters["f1_weighted"].add(metrics["f1_weighted"])
+        loss_meters["recall_macro"].add(metrics["recall_macro"])
+        loss_meters["precision_macro"].add(metrics["precision_macro"])
+        loss_meters["confusion_matrix"] = metrics["confusion_matrix"]
+
     return loss_meters
 
 
@@ -274,6 +377,11 @@ def test_validate(epoch, writer, loader, split="val", class_weights=None) -> Los
     net.eval()
     iteration = 0
     total_iters = len(loader)
+
+    # Collect predictions and targets for metrics calculation
+    all_predictions = []
+    all_targets = []
+
     for batch in loader:
         batch = util.batch_cuda(batch)
         pred, loss_dict = net(batch, class_weights=class_weights)
@@ -293,6 +401,10 @@ def test_validate(epoch, writer, loader, split="val", class_weights=None) -> Los
         correct = (pred_idx == batch["verb"]).float().sum()
         batch_acc = correct / pred.shape[0]
         loss_meters[f"{split}_bacc %"].add(batch_acc)
+
+        # Collect predictions and targets for metric calculation
+        all_predictions.extend(pred_idx.cpu().numpy().tolist())
+        all_targets.extend(batch["verb"].cpu().numpy().tolist())
 
         if iteration % args.log_every == 0:
             log_str = "epoch: %d + %d/%d | " % (epoch, iteration, total_iters)
@@ -334,6 +446,30 @@ def test_validate(epoch, writer, loader, split="val", class_weights=None) -> Los
         loss_meters[f"{split}_ant_loss"].value()[0],
         epoch,
     )
+
+    # Calculate and log classification metrics
+    metrics = calculate_classification_metrics(all_predictions, all_targets)
+    if metrics:
+        writer.add_scalar(f"{split.capitalize()} F1 Macro", metrics["f1_macro"], epoch)
+        writer.add_scalar(f"{split.capitalize()} F1 Micro", metrics["f1_micro"], epoch)
+        writer.add_scalar(
+            f"{split.capitalize()} F1 Weighted", metrics["f1_weighted"], epoch
+        )
+        writer.add_scalar(
+            f"{split.capitalize()} Recall Macro", metrics["recall_macro"], epoch
+        )
+        writer.add_scalar(
+            f"{split.capitalize()} Precision Macro", metrics["precision_macro"], epoch
+        )
+
+        # Store metrics in loss_meters for JSON output
+        loss_meters[f"{split}_f1_macro"].add(metrics["f1_macro"])
+        loss_meters[f"{split}_f1_micro"].add(metrics["f1_micro"])
+        loss_meters[f"{split}_f1_weighted"].add(metrics["f1_weighted"])
+        loss_meters[f"{split}_recall_macro"].add(metrics["recall_macro"])
+        loss_meters[f"{split}_precision_macro"].add(metrics["precision_macro"])
+        loss_meters[f"{split}_confusion_matrix"] = metrics["confusion_matrix"]
+
     return loss_meters
 
 
@@ -508,16 +644,31 @@ for epoch in range(start_epoch, args.max_epochs + 1):
     if not args.test:
         train_metrics = train(epoch, writer, trainloader, class_weights)
 
-        training_metrics.append(
-            {
-                "epoch": epoch,
-                "total_loss": float(train_metrics["total_loss"].value()[0]),
-                "cls_loss": float(train_metrics["cls_loss"].value()[0]),
-                "ant_loss": float(train_metrics["ant_loss"].value()[0]),
-                # "aux_loss": float(train_metrics["aux_loss"].value()[0]),
-                "accuracy": float(train_metrics["bacc %"].value()[0]),
-            }
-        )
+        metrics_dict = {
+            "epoch": epoch,
+            "total_loss": float(train_metrics["total_loss"].value()[0]),
+            "cls_loss": float(train_metrics["cls_loss"].value()[0]),
+            "ant_loss": float(train_metrics["ant_loss"].value()[0]),
+            # "aux_loss": float(train_metrics["aux_loss"].value()[0]),
+            "accuracy": float(train_metrics["bacc %"].value()[0]),
+        }
+
+        # Add classification metrics if available
+        if "f1_macro" in train_metrics:
+            metrics_dict.update(
+                {
+                    "f1_macro": float(train_metrics["f1_macro"].value()[0]),
+                    "f1_micro": float(train_metrics["f1_micro"].value()[0]),
+                    "f1_weighted": float(train_metrics["f1_weighted"].value()[0]),
+                    "recall_macro": float(train_metrics["recall_macro"].value()[0]),
+                    "precision_macro": float(
+                        train_metrics["precision_macro"].value()[0]
+                    ),
+                    "confusion_matrix": train_metrics["confusion_matrix"],
+                }
+            )
+
+        training_metrics.append(metrics_dict)
 
         save_metrics(
             training_metrics, loss_file_name + f"epochs_training_{net.name}.json"
@@ -538,16 +689,31 @@ for epoch in range(start_epoch, args.max_epochs + 1):
     if args.validate and not args.test:
         val_metrics = test_validate(epoch, writer, valloader, split="val")
 
-        validation_metrics.append(
-            {
-                "epoch": epoch,
-                "total_loss": float(val_metrics["val_total_loss"].value()[0]),
-                "cls_loss": float(val_metrics["val_cls_loss"].value()[0]),
-                "ant_loss": float(val_metrics["val_ant_loss"].value()[0]),
-                # "aux_loss": float(val_metrics["aux_loss"].value()[0]),
-                "accuracy": float(val_metrics["val_bacc %"].value()[0]),
-            }
-        )
+        val_metrics_dict = {
+            "epoch": epoch,
+            "total_loss": float(val_metrics["val_total_loss"].value()[0]),
+            "cls_loss": float(val_metrics["val_cls_loss"].value()[0]),
+            "ant_loss": float(val_metrics["val_ant_loss"].value()[0]),
+            # "aux_loss": float(val_metrics["aux_loss"].value()[0]),
+            "accuracy": float(val_metrics["val_bacc %"].value()[0]),
+        }
+
+        # Add classification metrics if available
+        if "val_f1_macro" in val_metrics:
+            val_metrics_dict.update(
+                {
+                    "f1_macro": float(val_metrics["val_f1_macro"].value()[0]),
+                    "f1_micro": float(val_metrics["val_f1_micro"].value()[0]),
+                    "f1_weighted": float(val_metrics["val_f1_weighted"].value()[0]),
+                    "recall_macro": float(val_metrics["val_recall_macro"].value()[0]),
+                    "precision_macro": float(
+                        val_metrics["val_precision_macro"].value()[0]
+                    ),
+                    "confusion_matrix": val_metrics["val_confusion_matrix"],
+                }
+            )
+
+        validation_metrics.append(val_metrics_dict)
         save_metrics(
             validation_metrics,
             loss_file_name + f"epochs_validation_{net.name}.json",
@@ -567,16 +733,31 @@ for epoch in range(start_epoch, args.max_epochs + 1):
     if args.test:
         metrics = test_validate(1, writer, valloader, split="test")
 
-        test_metrics.append(
-            {
-                "epoch": epoch,
-                "total_loss": float(metrics["test_total_loss"].value()[0]),
-                "cls_loss": float(metrics["test_cls_loss"].value()[0]),
-                "accuracy": float(metrics["val_bacc %"].value()[0]),
-            }
-        )
+        test_metrics_dict = {
+            "epoch": epoch,
+            "total_loss": float(metrics["test_total_loss"].value()[0]),
+            "cls_loss": float(metrics["test_cls_loss"].value()[0]),
+            "accuracy": float(metrics["test_bacc %"].value()[0]),
+        }
+
+        # Add classification metrics if available
+        if "test_f1_macro" in metrics:
+            test_metrics_dict.update(
+                {
+                    "f1_macro": float(metrics["test_f1_macro"].value()[0]),
+                    "f1_micro": float(metrics["test_f1_micro"].value()[0]),
+                    "f1_weighted": float(metrics["test_f1_weighted"].value()[0]),
+                    "recall_macro": float(metrics["test_recall_macro"].value()[0]),
+                    "precision_macro": float(
+                        metrics["test_precision_macro"].value()[0]
+                    ),
+                    "confusion_matrix": metrics["test_confusion_matrix"],
+                }
+            )
+
+        test_metrics.append(test_metrics_dict)
         save_metrics(
-            validation_metrics,
+            test_metrics,
             loss_file_name + f"epochs_test_{net.name}.json",
         )
 
