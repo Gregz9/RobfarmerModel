@@ -5,6 +5,7 @@ import json
 import subprocess 
 import pandas as pd 
 import cv2 as cv
+from tqdm import tqdm
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--dset", type=str, default="Robofarmer-II")
@@ -50,13 +51,19 @@ def post_processing():
 
     train_images = annotation["train_images"]
     val_images = annotation["val_images"]
-    train_images = annotation["train_images"]
+    test_images = annotation["test_images"]
     
     if not os.path.exists("inactive_images/train_images"):
         try:
             subprocess.run(["mkdir", "inactive_images/train_images"])
         except: 
             print("Error during creation of: inactive_images/train_images")
+
+    if not os.path.exists("inactive_images/val_images"):
+        try:
+            subprocess.run(["mkdir", "inactive_images/val_images"])
+        except: 
+            print("Error during creation of: inactive_images/val_images")
 
     if not os.path.exists("inactive_images/val_images"):
         try:
@@ -80,21 +87,38 @@ def post_processing():
         except:
             print(f"Error while copying image file: {os.path.join("inactive_images", video_id, img_name)}")
 
-        for img in val_images:
+    for img in val_images:
 
-            video_id = img["video_id"]
-            img_name = img["image"][0]
+        video_id = img["video_id"]
+        img_name = img["image"][0]
 
-            try: 
-                subprocess.run(
-                    [
-                    "cp",
-                    os.path.join("inactive_images", video_id, img_name),
-                    "inactive_images/train_images",
-                    ]
-                    )
-            except:
-                print(f"Error while copying image file: {os.path.join("inactive_images", video_id, img_name)}")
+        try: 
+            subprocess.run(
+                [
+                "cp",
+                os.path.join("inactive_images", video_id, img_name),
+                "inactive_images/val_images",
+                ]
+                )
+        except:
+            print(f"Error while copying image file: {os.path.join("inactive_images", video_id, img_name)}")
+
+    for img in test_images:
+
+        video_id = img["video_id"]
+        img_name = img["image"][0]
+
+        try: 
+            subprocess.run(
+                [
+                "cp",
+                os.path.join("inactive_images", video_id, img_name),
+                "inactive_images/test_images",
+                ]
+                )
+        except:
+            print(f"Error while copying image file: {os.path.join("inactive_images", video_id, img_name)}")
+
 
 
 if __name__ == "__main__":

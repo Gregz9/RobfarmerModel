@@ -2,6 +2,7 @@ import os
 import subprocess
 import json
 import cv2 as cv
+from tqdm import tqdm
 
 if __name__ == "__main__":
 
@@ -89,24 +90,29 @@ if __name__ == "__main__":
         success, image = vidcap.read()
         count = 1
 
+        # Get total frame count for tqdm
+        total_frames = int(vidcap.get(cv.CAP_PROP_FRAME_COUNT))
+
         # Saving path to each of images
         image_map[k2] = []
 
         # Extract frames from the video
-        while success:
-            file_name = os.path.join(vid_images_path, f"frame_{count:010d}.jpg")
-            image_map[k2].append(file_name)
+        with tqdm(total=total_frames, desc=f"Extracting frames from {k2}") as pbar:
+            while success:
+                file_name = os.path.join(vid_images_path, f"frame_{count:010d}.jpg")
+                image_map[k2].append(file_name)
 
-            cv.imwrite(file_name, image)
-            print(
-                f"Reading of frame_{count:010d}.jpg was successful: {success}",
-                end="\r",
-            )
-            count += 1
-            success, image = vidcap.read()
+                cv.imwrite(file_name, image)
+                print(
+                    f"Reading of frame_{count:010d}.jpg was successful: {success}",
+                    end="\r",
+                )
+                count += 1
+                success, image = vidcap.read()
+                pbar.update(1)
 
-            # Sorting paths
-            image_map[k2] = sorted(image_map[k2])
+        # Sorting paths
+        image_map[k2] = sorted(image_map[k2])
 
     # Creating convenience files
     
