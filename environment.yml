@@ -1,4 +1,4 @@
-name: samclip
+name: robofarmer
 channels:
   - conda-forge
   - defaults
