@@ -6,7 +6,7 @@ This guide explains how to build and run the RobfarmerModel using Docker.
 
 - Docker installed on your system
 - NVIDIA Docker runtime (for GPU support)
-- Copy the Robofarmer-II directory from 
+- Copy the Robofarmer-II directory from elvex.sintef.no:/data/robofarmer to your home directory
 
 ## Building the Docker Image
 
