@@ -12,25 +12,39 @@ from utilities import (
 )
 
 COLORMAPS = {
-    "Autumn" : cv.COLORMAP_AUTUMN,
-    "Bone" : cv.COLORMAP_BONE,
-    "Winter" : cv.COLORMAP_WINTER,
-    "Jet" : cv.COLORMAP_JET,
-    "Ocean" : cv.COLORMAP_OCEAN,
-    "Magma" : cv.COLORMAP_MAGMA,
-    "Plasma" : cv.COLORMAP_PLASMA,
-    "Viridis" : cv.COLORMAP_VIRIDIS,
-    "Hot" : cv.COLORMAP_HOT
+    "Autumn": cv.COLORMAP_AUTUMN,
+    "Bone": cv.COLORMAP_BONE,
+    "Winter": cv.COLORMAP_WINTER,
+    "Jet": cv.COLORMAP_JET,
+    "Ocean": cv.COLORMAP_OCEAN,
+    "Magma": cv.COLORMAP_MAGMA,
+    "Plasma": cv.COLORMAP_PLASMA,
+    "Viridis": cv.COLORMAP_VIRIDIS,
+    "Hot": cv.COLORMAP_HOT,
 }
 
+
 def pointToHeatmap(
-    pointList, gaussianSize=99, normalize=True, heatmapShape=(900, 900), offset=(0, 0)
+    pointList,
+    gaussianSize=99,
+    normalize=True,
+    heatmapShape=(900, 900),
+    offset=(0, 0),
+    uniform=False,
 ):
     canvas = np.zeros(heatmapShape)
     for p in pointList:
         if p[1] < heatmapShape[0] and p[0] < heatmapShape[1]:
-            canvas[p[1]][p[0]] = 1
-    g = cv.GaussianBlur(canvas, (gaussianSize, gaussianSize), 0, 0)
+            canvas[p[1]][p[0]] = 255
+
+    if uniform:
+        # Use uniform kernel instead of Gaussian
+        kernel_size = gaussianSize if gaussianSize % 2 == 1 else gaussianSize + 1
+        kernel = np.ones((kernel_size, kernel_size)) / (kernel_size * kernel_size)
+        g = cv.filter2D(canvas, -1, kernel)
+    else:
+        g = cv.GaussianBlur(canvas, (gaussianSize, gaussianSize), 0, 0)
+
     if normalize:
         g = cv.normalize(
             g, None, alpha=0, beta=1, norm_type=cv.NORM_MINMAX, dtype=cv.CV_32F
@@ -40,9 +54,7 @@ def pointToHeatmap(
 
 def overlay_heatmap(image, heatmap, colormap, alpha=0.3):
 
-    heatmap_colored = cv.applyColorMap(
-        (heatmap * 255).astype(np.uint8), colormap
-    )
+    heatmap_colored = cv.applyColorMap((heatmap * 255).astype(np.uint8), colormap)
     if heatmap_colored.shape[:2] != image.shape[:2]:
         heatmap_colored = cv.resize(heatmap_colored, (image.shape[1], image.shape[0]))
 
@@ -58,10 +70,11 @@ def load_gaze(path):
         filter(lambda x: len(x["data"]) > 0 and "gaze2d" in x["data"], gaze_data)
     )
 
-    return gaze_data 
+    return gaze_data
+
 
 def load_annotation(dataset_path: str):
-    
+
     annot = pd.read_csv(
         os.path.join(dataset_path, "Annotation.csv"),
         dtype={"uint": "int", "start_action": "int", "stop_action": "int"},
@@ -73,9 +86,7 @@ def load_annotation(dataset_path: str):
 
 if __name__ == "__main__":
 
-    dataset_path = os.path.expanduser(
-        "~/Desktop/MasterThesis/data/datasets/Robofarmer-II"
-    )
+    dataset_path = "/app/data/datasets/Robofarmer-II"
     annot = load_annotation(dataset_path)
     # unique_vids = annot["video_id"].unique().copy().tolist()
     idx = 0
@@ -144,7 +155,7 @@ if __name__ == "__main__":
             #
         frame2 = img.copy()
 
-        g = pointToHeatmap(points, heatmapShape=(h, w))
+        g = pointToHeatmap(points, heatmapShape=(h, w), normalize=False)
         frame = overlay_heatmap(img, g, COLORMAPS["Jet"])
         frame = cv.resize(
             frame, (int(w / 2.6), int(h / 2.4)), interpolation=cv.INTER_CUBIC
@@ -170,14 +181,14 @@ if __name__ == "__main__":
         )
 
         frames = np.concatenate([frame, frame2], axis=1)
-        
+
         # Create third image combinig both heatmaps
         frame3 = overlay_heatmap(frame, g2, COLORMAPS["Jet"])
-        h2, w2, c  = frame3.shape
-        canvas = np.zeros((h2, w2*2, c), dtype=np.uint8)
-        canvas[:, canvas.shape[1]//4 : (canvas.shape[1] // 4)* 3, : ] = frame3
+        h2, w2, c = frame3.shape
+        canvas = np.zeros((h2, w2 * 2, c), dtype=np.uint8)
+        canvas[:, canvas.shape[1] // 4 : (canvas.shape[1] // 4) * 3, :] = frame3
         frames = np.concatenate([frames, canvas], axis=0)
-        
+
         cv.imshow("Gaze map vs Annotation", frames)
 
         # Delay allowing to view the frames

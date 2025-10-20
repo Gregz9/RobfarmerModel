@@ -22,8 +22,12 @@ class VideoInteractions(tdata.Dataset):
             self.max_len = 32
             print("Max length not chosen. Setting max length to:", self.max_len)
 
-        self.clip_transform = util.clip_transform(self.split, self.max_len, size=kwargs["size"])
-        self.gazemap_transform = util.gazemap_transform(self.split, self.max_len, size=kwargs["size"])
+        self.clip_transform = util.clip_transform(
+            self.split, self.max_len, size=kwargs["size"]
+        )
+        self.gazemap_transform = util.gazemap_transform(
+            self.split, self.max_len, size=kwargs["size"]
+        )
         self.img_transform = util.default_transform(self.split, size=kwargs["size"])
         self.pair_transform = util.PairedTransform(self.split)
 
@@ -107,6 +111,7 @@ class VideoInteractions(tdata.Dataset):
 import cv2
 
 
+# TODO: THIS NEED TO BE REPLACED!
 def compute_heatmap(points, image_size, k_ratio, transpose):
     """Compute the heatmap from annotated points.
     Args:
@@ -152,7 +157,7 @@ def compute_heatmap(points, image_size, k_ratio, transpose):
     return heatmap
 
 
-def generate_heatmaps(annots, kernel_size, out_file, transpose):
+def generate_heatmaps(annots, kernel_size, out_file, transpose, **kwargs):
 
     def generate(images):
         print("Generating %d heatmaps" % len(images))
@@ -166,15 +171,18 @@ def generate_heatmaps(annots, kernel_size, out_file, transpose):
         return keys, hmaps
 
     # train_keys, train_hmaps = generate(annots["train_images"])
-    test_keys, test_hmaps = generate(annots["test_images"])
+    if kwargs["split"] == "val":
+        hm_keys, hm_hmaps = generate(annots["val_images"])
+    else:
+        hm_keys, hm_hmaps = generate(annots["test_images"])
 
     # save the heatmaps as an h5 file
     hf = h5py.File(out_file, "w")
     # keys = [np.array(key, dtype="S") for key in train_keys + test_keys]
-    keys = [np.array(key, dtype="S") for key in test_keys]
+    keys = [np.array(key, dtype="S") for key in hm_keys]
     hf.create_dataset("keys", data=keys, dtype=h5py.special_dtype(vlen=str))
     # for idx, hmap in enumerate(train_hmaps + test_hmaps):
-    for idx, hmap in enumerate(test_hmaps):
+    for idx, hmap in enumerate(hm_hmaps):
         hf.create_dataset("heatmaps/%d" % idx, data=hmap, dtype=np.float32)
     hf.close()
 
@@ -196,8 +204,6 @@ class HeatmapLoader:
             key = (key[0].encode("utf-8"), key[1].encode("utf-8"))
         else:
             key = (key[0], key[1])
-        # print("My key: ", key)
-        # print(self.keys)
         heatmap = self.heatmaps[self.map[key]]
         heatmap = np.array(heatmap)
         return heatmap
@@ -208,7 +214,7 @@ class HeatmapLoader:
 
 class HeatmapDataset(tdata.Dataset):
 
-    def __init__(self, root, split, hm_file, std_norm=True, **kwargs):
+    def __init__(self, root, split, hm_file, std_norm=True):
         self.root = root
         self.split = split
         self.heatmaps = None
@@ -219,8 +225,8 @@ class HeatmapDataset(tdata.Dataset):
         return HeatmapLoader(self.hm_file)
 
     # Function to load the inactive image + its associated heatmap
-    def load_image_heatmap(self, entry):
-        pass
+    # def load_image_heatmap(self, entry):
+    #     pass
 
     # return the key for the entry (used for matching .h5 heatmaps)
     def key(self, entry):

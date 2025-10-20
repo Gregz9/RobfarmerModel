@@ -45,7 +45,7 @@ def default_transform(split, size):
             [
                 transforms.Resize([size, size]),
                 # transforms.Resize(256),
-                transforms.RandomCrop(224),
+                # transforms.RandomCrop(224),
                 transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
                 transforms.Normalize(mean, std),
@@ -57,7 +57,7 @@ def default_transform(split, size):
             [
                 transforms.Resize([size, size]),
                 # transforms.Resize(256),
-                transforms.CenterCrop(224),
+                # transforms.CenterCrop(224),
                 transforms.ToTensor(),
                 transforms.Normalize(mean, std),
             ]
@@ -74,7 +74,7 @@ def gazemap_transform(split, max_len, size):
         transform = transforms.Compose([
             gtransforms.GroupResize(size),
             # gtransforms.GroupResize(256),
-            gtransforms.GroupRandomCrop(224),
+            # gtransforms.GroupRandomCrop(224),
             gtransforms.GroupRandomHorizontalFlip(),
             gtransforms.ToTensor(),
             gtransforms.ZeroPad(max_len)
@@ -84,7 +84,7 @@ def gazemap_transform(split, max_len, size):
             [
                 gtransforms.GroupResize(size),
                 # gtransforms.GroupResize(256),
-                gtransforms.GroupCenterCrop(224),
+                # gtransforms.GroupCenterCrop(224),
                 gtransforms.ToTensor(),
                 gtransforms.ZeroPad(max_len),
             ]
@@ -102,7 +102,7 @@ def clip_transform(split, max_len, size):
                 
                 gtransforms.GroupResize(size),
                 # gtransforms.GroupResize(256),
-                gtransforms.GroupRandomCrop(224),
+                # gtransforms.GroupRandomCrop(224),
                 gtransforms.GroupRandomHorizontalFlip(),
                 gtransforms.ToTensor(),
                 gtransforms.GroupNormalize(mean, std),
@@ -115,7 +115,7 @@ def clip_transform(split, max_len, size):
             [
                 gtransforms.GroupResize(size),
                 # gtransforms.GroupResize(256),
-                gtransforms.GroupCenterCrop(224),
+                # gtransforms.GroupCenterCrop(224),
                 gtransforms.ToTensor(),
                 gtransforms.GroupNormalize(mean, std),
                 gtransforms.ZeroPad(max_len),
@@ -152,7 +152,7 @@ class PairedTransform:
         )
 
         # resize
-        image = TF.resize(image, size=(kwargs["size"], kwargs["size"]))
+        image = TF.resize(image, size=[kwargs["size"], kwargs["size"]])
         heatmap = F.interpolate(
             heatmap.unsqueeze(0).unsqueeze(0),
             size=image.size,
@@ -216,11 +216,11 @@ class PairedTransform:
 
         return image, heatmap
 
-    def __call__(self, image, heatmap):
+    def __call__(self, image, heatmap, **kwargs):
 
         if self.split == "train":
-            image, heatmap = self.train_transform(image, heatmap)
-        elif self.split == "val":
-            image, heatmap = self.val_transform(image, heatmap)
+            image, heatmap = self.train_transform(image, heatmap, size=kwargs["size"])
+        elif self.split == "val" or self.split == "test":
+            image, heatmap = self.val_transform(image, heatmap, size=kwargs["size"])
 
         return image, heatmap

@@ -1,54 +1,38 @@
-import mediapipe as mp
-from mediapipe.tasks import python
-from mediapipe.tasks.python import vision
-
 import numpy as np
 import cv2 as cv
 import os
-import subprocess
-import time
+import argparse
+import json
 
 import image_processing
-from utilities import DATASET_BASE_PATH, read_participant_id
 
-video_base_path = "../data/video/"
-video_name = "scenevideo.mp4"
-video_id = str(input("Enter video ID: "))
-participant_id = read_participant_id(video_id)
+# parser = argparse.ArgumentParser()
 
-frames_path = os.path.join(DATASET_BASE_PATH, participant_id, "rgb_frames", video_id)
-save_path_base = os.path.join(DATASET_BASE_PATH, participant_id, "hand-landmarks")
-
-num_files = (
-    len(
-        [
-            f
-            for f in os.listdir(frames_path)
-            if os.path.isfile(os.path.join(frames_path, f))
-        ]
-    )
-    + 1
+datasets_path = "/app/data/datasets"
+map_file = open(
+    os.path.join(datasets_path, "Robofarmer-II/video_participants_acro.json"), "r"
 )
+video_partic_map = json.load(map_file)
+inaactive_path = os.path.join(datasets_path, "Robofarmer-II/inactive_images/val_images")
+inactive_val_images = sorted(os.listdir(inaactive_path))
+video_list = list(video_partic_map.keys())
+# print("Choose video: ")
+# for i, video in enumerate(inactive_videos):
+#     print(f"{i}. {video}")
+#
+# exit()
 
-video_path = os.path.join(video_base_path, video_id, video_name)
+# choice = int(input("Enter choice: "))
 
-cap = cv.VideoCapture(video_path)
-number = 1
+# choosen_video = video_list[choice]
+# frames = sorted(os.listdir(os.path.join(datasets_path, "Robofarmer-II", video_partic_map[choosen_video] , "rgb_frames", choosen_video)))
+# frames_path = os.path.join(datasets_path, "Robofarmer-II", video_partic_map[choosen_video] , "rgb_frames", choosen_video)
+frames = inactive_val_images
+frames_path = os.path.join(datasets_path, "Robofarmer-II/inactive_images/val_images")
+idx = 0
 
-file_count = len([name for name in os.listdir()])
-hand_poses = {}
-while cap.isOpened():
-    print(
-        "["
-        + "#" * round((number / num_files) * 100)
-        + "-" * round(((num_files - number) / num_files) * 100)
-        + "]"
-        + f" - Processing frame: {number}",
-        end="\r",
-    )
-    ref, frame = cap.read()
-    if not ref:
-        break
+while True:
+    frame = cv.imread(os.path.join(frames_path, frames[idx]))
     h, w, _ = frame.shape
 
     # BGR to RGB
@@ -56,29 +40,50 @@ while cap.isOpened():
     image_aug = image_processing.image_sharpening(image)
     image_aug = image_processing.gamma_correction(image_aug, 1.5)
 
-    gabor_image = image_processing.gabor_edge_aug(image_aug)
-    edges_gabor = cv.Canny(gabor_image, 25, 80)
-    edges_org = cv.Canny(image_aug, 25, 80)
+    gabor_image = image_processing.gabor_edge_aug(image)
+    edges_gabor = cv.Canny(gabor_image, 50, 150)
+    edges_org = cv.Canny(image_aug, 50, 150)
     # edges = cv.Canny(image, 25, 100)
 
-    width = int(image.shape[0] / 2)
-    height = int(image.shape[1] / 2)
+    lines_gabor = cv.HoughLinesP(
+        edges_gabor, 1, np.pi / 180, threshold=10, minLineLength=50, maxLineGap=10
+    )
 
-    edges_org = cv.resize(edges_org, (height, width), cv.INTER_AREA)
-    edges_gabor = cv.resize(edges_gabor, (height, width), cv.INTER_AREA)
-    gabor_image = cv.resize(gabor_image, (height, width), cv.INTER_AREA)
+    image_without_lines = edges_gabor.copy()
 
-    number += 1
+    # Remove the detected lines by drawing over them with a specific color (e.g., white)
+    if lines_gabor is not None:
+        for line in lines_gabor:
+            x1, y1, x2, y2 = line[0]
+            # Draw a black line over the detected line to remove it
+            cv.line(
+                image_without_lines, (x1, y1), (x2, y2), (0, 0, 0), 5
+            )  # 5 is the thickness
+
+    width = 600  # int(image.shape[0] / 2)
+    height = 600  # int(image.shape[1] / 2)
+
+    edges_org = cv.resize(edges_org, (height, width), cv.INTER_CUBIC)
+    org_frame = cv.resize(frame, (height, width), cv.INTER_CUBIC)
+    edges_gabor = cv.resize(edges_gabor, (height, width), cv.INTER_CUBIC)
+    gabor_image = cv.resize(gabor_image, (height, width), cv.INTER_CUBIC)
+
+    gabor_no_lines = cv.resize(image_without_lines, (height, width), cv.INTER_CUBIC)
 
     gabor_image = cv.cvtColor(gabor_image, cv.COLOR_RGB2BGR)
     edges_gabor = cv.cvtColor(edges_gabor, cv.COLOR_GRAY2RGB)
-    two_imgs = np.hstack([gabor_image, edges_gabor])
+    gabor_no_lines = cv.cvtColor(gabor_no_lines, cv.COLOR_GRAY2RGB)
+    two_imgs = np.hstack([org_frame, edges_gabor])
     cv.imshow("Edge image", two_imgs)
-    if cv.waitKey(1) & 0xFF == ord("q"):
+    key = cv.waitKey(40) & 0xFF
+    if key == ord("q"):
         break
+        # exit()
+    elif key == 83:
+        idx = idx + 1
+    elif key == 81:
+        idx = idx - 1
     # time.sleep(0.5)
     # Detections
-
 # NOTE: Save all hand pose estimates
-cap.release()
 cv.destroyAllWindows()

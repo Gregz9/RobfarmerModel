@@ -191,7 +191,7 @@ class Evaluator:
         out = torch.cat(out, 0)
         return out
 
-    def evaluate(self, preds):
+    def evaluate(self, preds) -> list[dict]:
 
         preds = self.make_dict(preds)
         scores = []
@@ -203,19 +203,22 @@ class Evaluator:
         # NOTE: Since self.gt.keys() is a dictionary, all duplicate keys will automatically be removed
         # effectively reducing the size of the test set from 93 to 71 images
         gt_key_list = list(self.gt.keys())
-        for i in range(len(gt_key_list)):
-            gt_key_list[i] = (gt_key_list[i][0].decode(), gt_key_list[i][1].decode())
-        # preds_key_list = list(preds.keys())
 
+        for i in range(len(gt_key_list)):
+            if isinstance(gt_key_list[i][0], bytes) or isinstance(
+                gt_key_list[i][1], bytes
+            ):
+                gt_key_list[i] = (
+                    gt_key_list[i][0].decode(),
+                    gt_key_list[i][1].decode(),
+                )
+        # preds_key_list = list(preds.keys())
         for key in tqdm.tqdm(gt_key_list):
             if key not in preds:
                 continue
-            score = self.score(
-                preds[key], self.gt[(key[0].encode("utf-8"), key[1].encode("utf-8"))]
-            )
+            score = self.score(preds[key], self.gt[(key[0], key[1])])
             scores.append(score)
 
-        # print(scores)
         write_out = []
         for key in ["KLD", "SIM", "AUC-J"]:
             key_score = [s[key] for s in scores if s[key] is not None]
@@ -232,7 +235,6 @@ class Evaluator:
             write_out.append(log_str)
         write_out.append("-" * 20)
         write_out = "\n".join(write_out)
-        print(write_out)
 
         return scores, None
 

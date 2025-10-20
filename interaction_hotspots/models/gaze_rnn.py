@@ -232,6 +232,6 @@ class FrameLSTM(nn.Module):
 def frame_lstm_gaze(num_classes, max_len, backbone, hidden_size=2048, ant_loss="mse"):
     net = FrameLSTM(num_classes, max_len, hidden_size, ant_loss=ant_loss)
     net.init_backbone(backbone)
-    print("Using backbone class: %s" % backbone)
-    print("Using ant loss fn: %s" % ant_loss)
+    # print("Using backbone class: %s" % backbone)
+    # print("Using ant loss fn: %s" % ant_loss)
     return net

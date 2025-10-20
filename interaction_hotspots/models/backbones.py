@@ -147,5 +147,3 @@ def dr50_n28():
     wts = tmodels.resnet50(pretrained=True).state_dict()
     net = DilatedResNetBackbone(Bottleneck, [3, 4, 6, 3], strides=[1,2,1,1], dilations=[1,1,2,4], pretrained=wts)
     return net
-
-# def r18

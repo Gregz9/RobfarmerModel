@@ -10,13 +10,13 @@ from utilities import read_participant_id
 from typing import Optional
 import math
 
-_BASE_PATH = os.path.expanduser("~/Desktop/MasterThesis/data/datasets")
+_BASE_PATH = "/app/data/datasets"
 
 # NOTE: The old dataset does not have paths configured optimally
 _DATA_ROOTS = {
     "dataset": os.path.join(_BASE_PATH, "Robofarmer"),
-    "annotation": os.path.expanduser("~/Desktop/MasterThesis/data/Annotation.csv"),
-    "videos": os.path.expanduser("~/Desktop/MasterThesis/data/video"),
+    "annotation": "/app/data/Annotation.csv",
+    "videos": "/app/data/video",
 }
 
 _DATA_ROOTS_II = {

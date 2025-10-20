@@ -8,7 +8,9 @@ from interaction_hotspots.models import backbones
 
 def attentionConsistencyLoss(attention_maps, gaze_maps, sigma):
     gaze_maps = gaze_maps.mean(1)
-    return (1 / (2 * sigma**2)) * torch.mean( (attention_maps - gaze_maps)**2) + torch.log(sigma)
+    return (1 / (2 * sigma**2)) * torch.mean(
+        (attention_maps - gaze_maps) ** 2
+    ) + torch.log(sigma)
 
 
 class FrameLSTM(nn.Module):
@@ -23,16 +25,19 @@ class FrameLSTM(nn.Module):
         self.pool_fn = pool_fn
         self.ant_loss = ant_loss
 
-    def init_backbone(self, backbone):
+    def init_backbone(self, backbone, **kwargs):
         self.backbone = backbone()
-        self.spatial_dim = self.backbone.spatial_dim
+        if kwargs["spatial_dim"] is not None:
+            self.spatial_dim = kwargs["spatial_dim"]
+        else:
+            self.spatial_dim = self.backbone.spatial_dim
         # NOTE: The LSTM is used as the time aggregation function
         self.rnn = nn.LSTM(
             self.backbone.feat_dim, self.hidden_size, batch_first=True
         )  # (B, T, num_maps)
         # NOTE: Head used for prediciting the action itself
         self.fc = nn.Linear(self.hidden_size, self.num_classes)
-        
+
         self.attention_sigma = nn.Parameter(torch.tensor(1.0), requires_grad=True)
 
         feat_dim = self.backbone.feat_dim
@@ -135,7 +140,6 @@ class FrameLSTM(nn.Module):
             target.unsqueeze(1).expand(target.shape[0], T).contiguous().view(-1)
         )
 
-
         # NOTE: Choosing the frame for which the model is most confident is the representation of the true action.
         pred_scores = -F.cross_entropy(lstm_preds, target_flat, reduction="none").view(
             B, T
@@ -149,18 +153,18 @@ class FrameLSTM(nn.Module):
         )  # don't select a padding frame! I.e. padding is used to handle sequences of variable length
         # NOTE: Active feats as in features associated with the active representation?
         active_feats = frame_feats[torch.arange(B), frame_idx]  # (B, 256, H, W)
-        # Original code: 
-        active_pooled = self.pool(active_feats).view(B, -1)
+        # Original code: active_pooled = self.pool(active_feats).view(B, -1)
         # New fix: Use adaptive pooling to handle variable input sizes
-        # active_pooled = F.adaptive_avg_pool2d(active_feats, (1, 1)).squeeze(-1).squeeze(-1)
+        active_pooled = (
+            F.adaptive_avg_pool2d(active_feats, (1, 1)).squeeze(-1).squeeze(-1)
+        )
 
         # NOTE: Function used for creation of the embedding of inactive frame ("State")
         def embed(x):
             pred_frame = self.project(self.backbone(x))
-            # Original code: 
-            pooled = self.pool(pred_frame).view(B, -1)
+            # Original code: pooled = self.pool(pred_frame).view(B, -1)
             # New fix: Use adaptive pooling to handle variable input sizes
-            # pooled = F.adaptive_avg_pool2d(pred_frame, (1, 1)).squeeze(-1).squeeze(-1)
+            pooled = F.adaptive_avg_pool2d(pred_frame, (1, 1)).squeeze(-1).squeeze(-1)
             return pooled
 
         # NOTE: The actual features used for prediction. I.e. positives are the
@@ -180,10 +184,11 @@ class FrameLSTM(nn.Module):
             ant_loss = 0.1 * ((positive_pooled - active_pooled) ** 2).mean(1)
         elif self.ant_loss == "triplet":
             negative_pooled = self.backbone(negative)
-            # Original code: 
-            negative_pooled = self.pool(negative_pooled).view(B, -1)
+            # Original code: negative_pooled = self.pool(negative_pooled).view(B, -1)
             # New fix: Use adaptive pooling to handle variable input sizes
-            # negative_pooled = F.adaptive_avg_pool2d(negative_pooled, (1, 1)).squeeze(-1).squeeze(-1)
+            negative_pooled = (
+                F.adaptive_avg_pool2d(negative_pooled, (1, 1)).squeeze(-1).squeeze(-1)
+            )
             anc, pos, neg = (
                 F.normalize(positive_pooled, 2),
                 F.normalize(active_pooled, 2),
@@ -198,17 +203,21 @@ class FrameLSTM(nn.Module):
                 anc, pos, neg, margin=0.5, reduction="none"
             )
 
-        return {"ant_loss": ant_loss} #"aux_loss": aux_loss}
+        return {"ant_loss": ant_loss}  # "aux_loss": aux_loss}
 
     def refine_cams(self, cam_original, image_shape):
-    
-        if image_shape[0] != cam_original.size(2) or image_shape[1] != cam_original.size(3):
-            cam_original = F.interpolate(cam_original, image_shape, mode="bilinear", align_corners=True) 
-        
+
+        if image_shape[0] != cam_original.size(2) or image_shape[
+            1
+        ] != cam_original.size(3):
+            cam_original = F.interpolate(
+                cam_original, image_shape, mode="bilinear", align_corners=True
+            )
+
         B, C, H, W = cam_original.size()
         cams = []
         for idx in range(C):
-            cam = cam_original[:, idx, :,:]
+            cam = cam_original[:, idx, :, :]
             cam = cam.view(B, -1)
             cam_min = cam.min(dim=1, keepdim=True)[0]
             cam_max = cam.max(dim=1, keepdim=True)[0]
@@ -236,12 +245,14 @@ class FrameLSTM(nn.Module):
         fmaps = frame_feats.view(new_shape)
 
         # NOTE: Global average or L2 pooling applied before the LSTM layer
-        # Original code: 
-        pool_feats = self.flatten_apply(frame_feats, lambda t: self.pool(t)).view(B, T, -1)  # (B, T, 256)
+        # Original code: pool_feats = self.flatten_apply(frame_feats, lambda t: self.pool(t)).view(B, T, -1)  # (B, T, 256)
         # New fix: Use adaptive pooling to handle variable input sizes
-        # pool_feats = self.flatten_apply(frame_feats, lambda t: F.adaptive_avg_pool2d(t, (1, 1)).squeeze(-1).squeeze(-1)).view(
-        #    B, T, -1
-        #)  # (B, T, 2048)
+        pool_feats = self.flatten_apply(
+            frame_feats,
+            lambda t: F.adaptive_avg_pool2d(t, (1, 1)).squeeze(-1).squeeze(-1),
+        ).view(
+            B, T, -1
+        )  # (B, T, 2048)
 
         # NOTE: Embedding of clip is equivalent to passing the output of the backbone through
         # the LSTM layers
@@ -251,30 +262,36 @@ class FrameLSTM(nn.Module):
         preds = self.fc(clip_feats)
 
         fc_params = self.fc.weight.detach().unsqueeze(-1).unsqueeze(-1)
-        cams = F.conv2d(fmaps, fc_params, bias=None) #  [B*T, Num_classes, H, W]
-        
+        cams = F.conv2d(fmaps, fc_params, bias=None)  #  [B*T, Num_classes, H, W]
+
         cams = self.refine_cams(cams, image_shape=gazemaps.shape[3:])
-        
+
         cams = F.relu(cams)
 
-        # Extract the correct cams: 
+        # Extract the correct cams:
         labels = torch.repeat_interleave(torch.argmax(preds, dim=1), 8)
-        
-        cams = cams[torch.arange(B*T), labels]
-        shape = gazemaps.size() 
-        attention_loss = attentionConsistencyLoss(cams, gazemaps.view(shape[0]*shape[1], shape[2], shape[3], shape[4]), self.attention_sigma)
+
+        cams = cams[torch.arange(B * T), labels]
+        shape = gazemaps.size()
+        attention_loss = attentionConsistencyLoss(
+            cams,
+            gazemaps.view(shape[0] * shape[1], shape[2], shape[3], shape[4]),
+            self.attention_sigma,
+        )
 
         loss_dict = {}
         target = batch["verb"]
         # If provided use class weighting
         if kwargs["class_weights"] is not None:
-            cls_loss = F.cross_entropy(preds, target, reduction="none", weight=kwargs["class_weights"])
+            cls_loss = F.cross_entropy(
+                preds, target, reduction="none", weight=kwargs["class_weights"]
+            )
         else:
             cls_loss = F.cross_entropy(preds, target, reduction="none")
 
         # NOTE: Save class loss to dict
         loss_dict.update({"cls_loss": cls_loss})
-        loss_dict.update({"attention_loss" : attention_loss})
+        loss_dict.update({"attention_loss": attention_loss})
 
         if not self.training or self.ant_loss is None:
             return preds, loss_dict
@@ -302,10 +319,9 @@ class FrameLSTM(nn.Module):
         if self.ant_loss is not None:
             frame_feats = self.project(frame_feats)
 
-        # Original code: 
-        pool_feats = self.pool(frame_feats).view(B, -1)
+        # Original code: pool_feats = self.pool(frame_feats).view(B, -1)
         # New fix: Use adaptive pooling to handle variable input sizes
-        # pool_feats = F.adaptive_avg_pool2d(frame_feats, (1, 1)).squeeze(-1).squeeze(-1)
+        pool_feats = F.adaptive_avg_pool2d(frame_feats, (1, 1)).squeeze(-1).squeeze(-1)
 
         _, (hn, cn) = self.rnn(
             pool_feats.unsqueeze(1), self.get_hidden_state(B, pool_feats.device)
@@ -314,9 +330,9 @@ class FrameLSTM(nn.Module):
         return pred
 
 
-def cons_frame_lstm(num_classes, max_len, backbone, hidden_size=2048, ant_loss="mse"):
+def cons_frame_lstm(
+    num_classes, max_len, backbone, hidden_size=2048, ant_loss="mse", **kwargs
+):
     net = FrameLSTM(num_classes, max_len, hidden_size, ant_loss=ant_loss)
-    net.init_backbone(backbone)
-    print("Using backbone class: %s" % backbone)
-    print("Using ant loss fn: %s" % ant_loss)
+    net.init_backbone(backbone, spatial_dim=kwargs["spatial_dim"])
     return net

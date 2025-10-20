@@ -18,12 +18,18 @@ class FrameLSTM(nn.Module):
         self.pool_fn = pool_fn
         self.ant_loss = ant_loss
 
-    def init_backbone(self, backbone):
+    def init_backbone(self, backbone, **kwargs):
         self.backbone = backbone()
-        self.spatial_dim = self.backbone.spatial_dim
+
+        if kwargs["spatial_dim"] is not None:
+            self.spatial_dim = kwargs["spatial_dim"]
+        else:
+            self.spatial_dim = self.backbone.spatial_dim
+        # NOTE: The LSTM is used as the time aggregation function
         self.rnn = nn.LSTM(
             self.backbone.feat_dim, self.hidden_size, batch_first=True
         )  # (B, T, num_maps)
+
         self.fc = nn.Linear(self.hidden_size, self.num_classes)
 
         feat_dim = self.backbone.feat_dim
@@ -206,9 +212,9 @@ class FrameLSTM(nn.Module):
         return pred
 
 
-def frame_lstm(num_classes, max_len, backbone, hidden_size=2048, ant_loss="mse"):
+def frame_lstm(
+    num_classes, max_len, backbone, hidden_size=2048, ant_loss="mse", **kwargs
+):
     net = FrameLSTM(num_classes, max_len, hidden_size, ant_loss=ant_loss)
-    net.init_backbone(backbone)
-    print("Using backbone class: %s" % backbone)
-    print("Using ant loss fn: %s" % ant_loss)
+    net.init_backbone(backbone, spatial_dim=kwargs["spatial_dim"])
     return net

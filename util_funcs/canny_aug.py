@@ -19,15 +19,12 @@ participant_id = read_participant_id(video_id)
 frames_path = os.path.join(DATASET_BASE_PATH, participant_id, "rgb_frames", video_id)
 save_path_base = os.path.join(DATASET_BASE_PATH, participant_id, "hand-landmarks")
 
-num_files = (
-    len(
-        [
-            f
-            for f in os.listdir(frames_path)
-            if os.path.isfile(os.path.join(frames_path, f))
-        ]
-    )
-    + 1
+num_files = len(
+    [
+        f
+        for f in os.listdir(frames_path)
+        if os.path.isfile(os.path.join(frames_path, f))
+    ]
 )
 
 video_path = os.path.join(video_base_path, video_id, video_name)
@@ -35,7 +32,7 @@ video_path = os.path.join(video_base_path, video_id, video_name)
 cap = cv.VideoCapture(video_path)
 number = 1
 
-file_count = len([name for name in os.listdir()])
+file_count = len([name for name in os.listdir(save_path_base)])
 hand_poses = {}
 while cap.isOpened():
     print(
@@ -54,12 +51,12 @@ while cap.isOpened():
     # BGR to RGB
     image = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
     image_aug = image_processing.image_sharpening(image)
-    image_aug = image_processing.gamma_correction(image, 1.5)
+    image_aug = image_processing.gamma_correction(image_aug, 1.5)
     edges_aug = cv.Canny(image_aug, 25, 80)
     # edges = cv.Canny(image, 25, 100)
 
-    width = int(image.shape[0] / 1.5)
-    height = int(image.shape[1] / 1.5)
+    height = int(image.shape[0] / 1.5)
+    width = int(image.shape[1] / 1.5)
 
     edges_aug = cv.resize(edges_aug, (height, width), cv.INTER_AREA)
     # edges = cv.resize(edges, (height, width), cv.INTER_AREA)
@@ -89,10 +86,13 @@ while cap.isOpened():
 
     number += 1
 
-    two_imgs = np.hstack([image_aug, edges_aug])
+    # Convert grayscale to 3-channel for consistent stacking
+    image_aug_3ch = cv.cvtColor(image_aug, cv.COLOR_GRAY2BGR)
+    edges_aug_3ch = cv.cvtColor(edges_aug, cv.COLOR_GRAY2BGR)
+    two_imgs = np.hstack([image_aug_3ch, edges_aug_3ch])
     # two_imgs_2 = np.hstack([image_aug, edges_aug])
     # four_imgs = np.vstack([two_imgs, two_imgs_2])
-    cv.imshow("Edge image", image)
+    cv.imshow("Processed image with edges", image)
     if cv.waitKey(1) & 0xFF == ord("q"):
         break
     # time.sleep(0.5)

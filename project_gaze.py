@@ -51,9 +51,7 @@ def load_gaze(path):
 if __name__ == "__main__":
 
     # Find the list of all new video files
-    new_vids = os.listdir(
-        os.path.expanduser("~/Desktop/MasterThesis/data/datasets/Robofarmer-II/videos")
-    )
+    new_vids = os.listdir("/app/data/datasets/Robofarmer-II/videos")
 
     # Filter out all files from the list, keep only directories with videos
     new_vids = list(
@@ -75,9 +73,7 @@ if __name__ == "__main__":
     )
 
     # Full paths to the videos
-    base_path = os.path.join(
-        os.path.expanduser("~/"), "Desktop/MasterThesis/data/datasets/Robofarmer-II"
-    )
+    base_path = "/app/data/datasets/Robofarmer-II"
     video_path = os.path.join(
         base_path, "videos", new_vids[choice - 1], "scenevideo.mp4"
     )

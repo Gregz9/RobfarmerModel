@@ -1,5 +1,4 @@
 import os
-from re import A
 import cv2 as cv
 import json
 from preprocess.dataset_util import FrameDetections
@@ -9,11 +8,11 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 import json
-import pprint
-from tabulate import tabulate
 from tqdm import tqdm
 import time
 import random
+import numpy as np
+import threading
 
 
 FLANN_INDEX_TREE = 1
@@ -75,10 +74,10 @@ def clips_structure(df, verbs, nouns, dataset_name):
     tmp_vid = ""
     gaze_data = []
     timestamps = []
-    for idx, row in df.iterrows():
+    for _, row in tqdm(df.iterrows(), total=df.shape[0], desc="Processing rows"):
         if row.iloc[1] != tmp_vid:
-            gaze_path = os.path.expanduser(
-                f"../data/datasets/{dataset_name}/videos/{row.iloc[1]}/gazedata"
+            gaze_path = (
+                f"/app/data/datasets/{dataset_name}/videos/{row.iloc[1]}/gazedata"
             )
             gaze_data = load_jsonl_data(gaze_path)
             gaze_data = list(
@@ -113,16 +112,15 @@ def clips_structure(df, verbs, nouns, dataset_name):
             }
         )
         local_idx += 1
-    # print(json.dumps(clips, indent=4))
     return clips
 
 
-def image_structure(df, verbs, nouns):
+def image_structure(df, verbs, nouns, d_name="Robofarmer-II"):
 
     images_data = []
-
+    org_height, org_width = 1080, 1920
     local_idx = 0
-    for _, row in df.iterrows():
+    for _, row in tqdm(df.iterrows(), total=df.shape[0], desc="Processing rows"):
 
         if isinstance(row.iloc[4], str):
             bbox_coords = row.iloc[4].split(",")
@@ -138,7 +136,39 @@ def image_structure(df, verbs, nouns):
 
             for i in range(0, len(pairs), 2):
                 if i + 1 < len(pairs):
-                    contact_coords.append([int(pairs[i]), int(pairs[i + 1])])
+                    contact_coords.append([int(pairs[i]) * 2, int(pairs[i + 1]) * 2])
+
+        g_points = []
+        if row.iloc[6] != "":
+            # Re-project gaze to the bounding box
+            gaze_path = f"../data/datasets/{d_name}/videos/{row.iloc[6]}/gazedata"
+            gaze_data = load_jsonl_data(gaze_path)
+            gaze_data = list(
+                filter(
+                    lambda x: len(x["data"]) > 0 and "gaze2d" in x["data"], gaze_data
+                )
+            )
+            timestamps = [data["timestamp"] for data in gaze_data]
+
+            # NOTE: Gather al gaze points, from start to finish of action
+            gaze_points = [
+                gaze_data[findTime(i / 25, timestamps)]["data"]["gaze2d"]
+                for i in range(row.iloc[-2], row.iloc[-1] + 1)
+            ]
+
+            for gaze_point in gaze_points:
+
+                x, y = int(gaze_point[0] * org_width), int(gaze_point[1] * org_height)
+
+                # If gaze point is outside the bounding box, exclude it from annotation
+                if (x - bbox_coords[0]) < 0 or (y - bbox_coords[1]) < 0:
+                    continue
+
+                reproj_gaze = [
+                    (x - bbox_coords[0]) / (bbox_coords[2] - bbox_coords[0]),
+                    (y - bbox_coords[1]) / (bbox_coords[3] - bbox_coords[1]),
+                ]
+                g_points.append(reproj_gaze)
 
         images_data.append(
             {
@@ -147,27 +177,28 @@ def image_structure(df, verbs, nouns):
                     bbox_coords[2] - bbox_coords[0],
                     bbox_coords[3] - bbox_coords[1],
                 ],
+                "bbox_coords": bbox_coords,
                 "verb": verbs.index(row.iloc[2]),
                 "noun": nouns.index(row.iloc[3]),
                 "uid": row.iloc[0],
                 "points": contact_coords,
-                "video_id": row.iloc[-2],
-                "participant_id": row.iloc[-1],
+                "video_id": row.iloc[6],
+                "participant_id": row.iloc[7],
+                "gaze_points": g_points,
             }
         )
         local_idx += 1
-    # print(json.dumps(images_data, indent=4))
     return images_data
 
 
 class DataHandler:
-    def __init__(self, filepath, dataset_name, callback=None):
+    def __init__(self, filepath, dataset_name, callback=None, **kwargs):
         self.filepath = filepath
         self.last_modified = os.path.getmtime(filepath)
         # self.data = self.read_data()
         self.dataset_name = dataset_name
         self.read_data()
-        self._toJson()
+        self._toJson(video_level_split=kwargs["video_level_split"])
         self.callback = callback
         self.running = False
         self.thread = None
@@ -246,7 +277,7 @@ class DataHandler:
         ) as f:
             json.dump(self.annotation, f, indent=4)
 
-    def _toJson(self):
+    def _toJson(self, **kwargs):
         if self.data.empty:
             print("Cannot write data to a json file, dataframe is empty")
             return
@@ -256,84 +287,106 @@ class DataHandler:
         verbs_list = []
         nouns_list = []
         train_idxs = []
+        val_idxs = []
         test_idxs = []
 
-        counts_size = self.data.groupby('video_id').size()
-        print("Counts using .size():")
-        # print(counts_size)
-        total_instances = sum([v for k,v in counts_size.items()])
-        print(total_instances)
-        print(total_instances * 0.68)
-        
-        video_names = list(counts_size.keys())
+        random.seed(71717)
+        if not kwargs["video_level_split"]:
+            counts_size = self.data.groupby("video_id").size()
+            video_names2 = list(counts_size.keys())
+            total_instances = sum([v for k, v in counts_size.items()])
 
-        train_sum = 0
-        train_vids = []
-        while(True):
-            video = random.choice(video_names)
-            train_sum += counts_size[video]
-            train_vids.append(video) 
-            counts_size.pop(video)
-            if train_sum > int(total_instances * 0.67):
-                break
+            train_sum = 0
+            train_vids = []
+            while True:
+                video = random.choice(video_names2)
+                train_sum += counts_size[video]
+                train_vids.append(video)
 
-        val_sum = 0
-        val_vids = []
-        while(True):
-            video = random.choice(video_names)
-            val_sum += counts_size[video]
-            val_vids.append(video)
-            counts_size.pop(video)
-            if val_sum > int(total_instances * 0.15):
-                break
-        
-        test_vids = list(counts_size.keys())
-        test_sum = sum(list(counts_size.values()))
+                video_uids = self.data[self.data["video_id"] == video]["uid"].tolist()
+                train_idxs.extend(video_uids)
 
-        print(train_sum)
-        print(val_sum)
-        print(test_sum)
-        exit() 
+                counts_size.pop(video)
+                video_names2.remove(video)
+                if train_sum > int(total_instances * 0.67):
+                    break
 
-        # Perform approximately 70-15-15 split into train - val - test
+            val_sum = 0
+            val_vids = []
+            while True:
+                video = random.choice(video_names2)
+                val_sum += counts_size[video]
+                val_vids.append(video)
 
-        # TODO: Train-val-test splitting needs reworking ASAP
-        for v_name in video_names:
-            data = self.data[self.data["video_id"] == v_name]
-            num_rows = data.shape[0]
-            uids = data["uid"].to_list()
+                video_uids = self.data[self.data["video_id"] == video]["uid"].to_list()
+                val_idxs.extend(video_uids)
 
-            if len(uids) > 3:
-                train_uids, temp_uids = train_test_split(
-                    uids,
-                    test_size=0.3,
-                    random_state=737,
-                    shuffle=False,
-                )
+                counts_size.pop(video)
+                video_names2.remove(video)
+                if val_sum > int(total_instances * 0.15):
+                    break
 
-                val_uids, test_uids = train_test_split(
-                    temp_uids,
-                    test_size=0.5,
-                    random_state=737,
-                    shuffle=False,
-                )
-            else:
-                train_uids = uids
+            test_sum = 0
+            for vid in video_names2:
+                # test_vids = list(counts_size.keys())
+                test_sum += counts_size[vid]
+                video_uids = self.data[self.data["video_id"] == vid]["uid"].to_list()
+                test_idxs.extend(video_uids)
+
+            # del video_names2
+
+            print(
+                f"Train split inst: {train_sum}. Percentage: {(train_sum/total_instances)*100}%"
+            )
+            print(
+                f"Validation split inst: {val_sum}. Percentage: {(val_sum/total_instances)*100}%"
+            )
+            print(
+                f"Test split inst: {test_sum}. Percentage: {(test_sum/total_instances)*100}%"
+            )
+
+        if kwargs["video_level_split"]:
+            for v_name in video_names:
+                data = self.data[self.data["video_id"] == v_name]
+                uids = data["uid"].to_list()
+
+                train_uids = []
                 val_uids = []
                 test_uids = []
 
-            test_uids = val_uids
-            train_idxs.extend(train_uids)
-            test_idxs.extend(test_uids)
+                if len(uids) > 3:
+                    train_uids, temp_uids = train_test_split(
+                        uids,
+                        test_size=0.3,
+                        random_state=737,
+                        shuffle=False,
+                    )
 
-            actions = data["action"].unique()
-            verbs_list.extend(actions)
-            # print(actions)
-            plants = data["noun"].unique()
-            nouns_list.extend(plants)
+                    val_uids, test_uids = train_test_split(
+                        temp_uids,
+                        test_size=0.5,
+                        random_state=737,
+                        shuffle=False,
+                    )
+
+                train_idxs.extend(train_uids)
+                val_idxs.extend(val_uids)
+                test_idxs.extend(test_uids)
+
+            print(
+                f"Train split inst: {len(train_idxs)}. Percentage: {(len(train_idxs)/len(self.data))*100}%"
+            )
+            print(
+                f"Validation split inst: {len(val_idxs)}. Percentage: {(len(val_idxs)/len(self.data))*100}%"
+            )
+            print(
+                f"Test split inst: {len(test_idxs)}. Percentage: {(len(test_idxs)/len(self.data))*100}%"
+            )
+
+        verbs_list = list(self.data["action"].unique())
+        nouns_list = list(self.data["noun"].unique())
 
         verbs_list = list(set(verbs_list))
-        # verbs_list.remove(" ")
         verbs_inner: dict[int, str] = {}
         for i in range(len(verbs_list)):
             verbs_inner[i] = verbs_list[i]
@@ -363,16 +416,24 @@ class DataHandler:
         ]
 
         train_df = clips[clips["uid"].isin(train_idxs)]
-        test_df = clips[clips["uid"].isin(test_idxs)]
+        val_df = clips[clips["uid"].isin(val_idxs)]
+        val_df = val_df.groupby("uid").filter(
+            lambda x: x["contact_points"].notna().all()
+            and x["contact_points"].ne("").all()
+        )
 
+        test_df = clips[clips["uid"].isin(test_idxs)]
         # NOTE: Filtering out instances without contact point annotation
         test_df = test_df.groupby("uid").filter(
             lambda x: x["contact_points"].notna().all()
             and x["contact_points"].ne("").all()
         )
 
+        print("Starting clips data structuring")
         train_clips = clips_structure(train_df, verbs, nouns, self.dataset_name)
+        val_clips = clips_structure(val_df, verbs, nouns, self.dataset_name)
         test_clips = clips_structure(test_df, verbs, nouns, self.dataset_name)
+        print("Finished clips data structuring")
 
         image_data = self.data[
             [
@@ -384,30 +445,40 @@ class DataHandler:
                 "contact_points",
                 "video_id",
                 "participant_id",
+                "start_action",
+                "stop_action",
             ]
         ]
 
         train_part = image_data[image_data["uid"].isin(train_idxs)]
+        val_part = image_data[image_data["uid"].isin(val_idxs)]
+        val_part = val_part.groupby("uid").filter(
+            lambda x: x["contact_points"].notna().all()
+            and x["contact_points"].ne("").all()
+        )
         test_part = image_data[image_data["uid"].isin(test_idxs)]
         test_part = test_part.groupby("uid").filter(
             lambda x: x["contact_points"].notna().all()
             and x["contact_points"].ne("").all()
         )
 
+        print("Starting inactive images structuring")
         train_images = image_structure(train_part, verbs_list, nouns_list)
+        val_images = image_structure(val_part, verbs_list, nouns_list)
         test_images = image_structure(test_part, verbs_list, nouns_list)
+        print("Finished inactive images structuring")
 
         self.annotation = {
             "verbs": verbs_list,
             "nouns": nouns_list,
             "inactive_images": inactive_images,
             "train_clips": train_clips,
+            "val_clips": val_clips,
             "test_clips": test_clips,
             "train_images": train_images,
+            "val_images": val_images,
             "test_images": test_images,
         }
-
-        # print(json.dumps(self.annotation, indent=4))
 
     def _monitor_loop(self, interval):
         while self.running:

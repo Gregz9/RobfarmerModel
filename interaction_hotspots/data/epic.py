@@ -10,8 +10,9 @@ import pickle
 from typing import override, overload
 import subprocess
 import cv2 as cv
-import torch 
+import torch
 import random
+from datetime import datetime
 
 main_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
 
@@ -42,7 +43,10 @@ class ImageLoader:
                 "train_heatmaps",
                 "val_heatmaps",
                 "videos",
-                "tmp_heatmaps",
+                "gaze_heatmaps",
+                "evaluation_metrics",
+                "annotation_backup",
+                "test",
             ]
 
             participant_dirs = [
@@ -75,17 +79,8 @@ class ImageLoader:
             self.all_rgb_dirs = dir_map
             self.frame_dirs = "rgb_frames"
             self.prefix = "frame_"
-        # elif rgb_or_det == "det":
-        #     self.frame_dir = "%s/object_detection_images/train/" % (root)
-        #     self.prefix = ""
 
     def __call__(self, v_id, f_id):
-        # file = self.frame_dir + "/%s/%s/%s%010d.jpg" % (
-        #     v_id.split("_")[0],
-        #     v_id,
-        #     self.prefix,
-        #     f_id,
-        # )
         file_name = f"{self.prefix}{int(f_id):010d}.jpg"
         full_name = os.path.join(self.all_rgb_dirs[v_id], file_name)
 
@@ -160,20 +155,70 @@ class CropPerturb:
 
 
 class GazeMapLoader:
-    def __init__(self, data, d_name, sample_rate, shape=(512, 512), gaussianSize=99, **kwargs):
-        self.data = data
+    """
+    Default shape is set to 28x28, becuase experiments with interpolation show that
+    """
+
+    def __init__(
+        self,
+        images,
+        clips,
+        d_name,
+        sample_rate,
+        shape=(28, 28),
+        gaussianSize=99,
+        **kwargs,
+    ):
+        self.clips = clips
+        self.images = images
+        # Images as in annotaion[f"{split}_images"]
+        self.images = images
         self.shape = shape
-        self.dataset_path = os.path.abspath(f"/app/data/datasets/{d_name}")
-        self.tmp_path = os.path.join(self.dataset_path, "tmp_heatmaps")
+        self.dataset_path = os.path.abspath(f"../../data/datasets/{d_name}")
+        self.gazemap_path = os.path.join(self.dataset_path, "gaze_heatmaps")
+        if not os.path.exists(self.gazemap_path):
+            try:
+                subprocess.run(["mkdir", self.gazemap_path])
+            except:
+                print(f"ERROR: Cannot create directory: {self.gazemap_path}")
+
         self.gaussianSize = gaussianSize
         self.sample_rate = sample_rate
         self.dense_gaze = kwargs["dense_gaze"]
+        self.dataset = d_name
+        self.split = kwargs["split"]
+        self.normalize = kwargs["normalize"]
 
-        if not os.path.exists(self.tmp_path):
+        self.evaluation = (
+            kwargs["evaluation"] if kwargs["evaluation"] is not None else False
+        )
+
+        if not os.path.exists(os.path.join(self.gazemap_path, self.split)):
             try:
-                subprocess.run(["mkdir", self.tmp_path])
+                subprocess.run(["mkdir", os.path.join(self.gazemap_path, self.split)])
             except:
-                print("Already exsists")
+                print(
+                    f"ERROR: Cannot create directory: {os.path.join(self.gazemap_path, self.split)}"
+                )
+
+        if self.dense_gaze:
+            self.gazemap_path = os.path.join(
+                self.gazemap_path,
+                self.split,
+                f"{self.shape[0]}x{self.shape[1]}_dense",
+            )
+        else:
+            self.gazemap_path = os.path.join(
+                self.gazemap_path,
+                self.split,
+                f"{self.shape[0]}x{self.shape[1]}_{self.sample_rate}",
+            )
+
+        if not os.path.exists(self.gazemap_path):
+            try:
+                subprocess.run(["mkdir", self.gazemap_path])
+            except:
+                print(f"ERROR: Cannot create directory: {self.gazemap_path}")
 
         # Generate the heatmaps
         self.gen_gazemaps()
@@ -195,38 +240,88 @@ class GazeMapLoader:
             g = cv.normalize(
                 g, None, alpha=0, beta=1, norm_type=cv.NORM_MINMAX, dtype=cv.CV_32F
             )
-            
+
         # To avoid winning from dataloader
-        g = np.dstack((g,g,g))
+        g = np.dstack((g, g, g))
         return g
+
+    def check_modified(self, mins=30):
+
+        annot_path = f"../../data/datasets/{self.dataset}/annotation.json"
+        if os.path.exists(annot_path) and os.path.exists(
+            os.path.join(self.gazemap_path, "meta.json")
+        ):
+            mod_time = os.path.getmtime(annot_path)
+
+            meta_file = open(os.path.join(self.gazemap_path, "meta.json"), "r")
+            meta_data = json.load(meta_file)
+            meta_file.close()
+
+            meta_gen_time = datetime.strptime(
+                meta_data["timestamp"], "%d-%m-%Y_%H-%M-%S"
+            )
+
+            # How long since meta_gen_time has been updated relative to
+            time_since_update = mod_time - meta_gen_time.timestamp()
+            return time_since_update > 0
+
+        # Symbolizes missing files
+        return False
 
     def gen_gazemaps(self):
 
-        for entry in self.data:
+        # If directory already exists and is populated, there's no need to (re-)generate these gazemaps
+        # if (
+        #     os.path.exists(self.gazemap_path) and len(os.listdir(self.gazemap_path)) > 0
+        # ) and not self.check_modified():
+        #     return
+
+        for img, entry in zip(self.images, self.clips):
+            # shape of bbox
+            w, h = img["shape"]
 
             if self.dense_gaze:
 
-                gaze_points = [
-                    (
-                        int(entry["gaze_points"][i][0] * self.shape[1]),
-                        int(entry["gaze_points"][i][1] * self.shape[0]),
-                    )
-                    for i in range(0, entry["stop"]-entry["start"]+1)
-                ]
+                if self.evaluation:
+                    gaze_points = [
+                        (
+                            int((img["gaze_points"][i][0] * self.shape[0])),
+                            int((img["gaze_points"][i][1] * self.shape[1])),
+                        )
+                        for i in range(len(img["gaze_points"]))
+                    ]
 
-                g = self.point2Heatmap(gaze_points, gaussianSize=self.gaussianSize, heatmapShape=self.shape)
-            
-                gaze_path = os.path.join(self.tmp_path, entry["v_id"])
+                else:
+                    gaze_points = [
+                        (
+                            int((entry["gaze_points"][i][0] * w) * (self.shape[0] / w)),
+                            int((entry["gaze_points"][i][1] * h) * (self.shape[1] / h)),
+                        )
+                        for i in range(0, entry["stop"] - entry["start"] + 1)
+                    ]
+
+                g = self.point2Heatmap(
+                    gaze_points,
+                    gaussianSize=self.gaussianSize,
+                    heatmapShape=self.shape,
+                    normalize=self.normalize,
+                )
+
+                gaze_path = os.path.join(self.gazemap_path, entry["v_id"])
                 if not os.path.exists(gaze_path):
                     try:
                         subprocess.run(["mkdir", gaze_path])
                     except:
                         print("Already exists")
 
-                gazemap_path = os.path.join(gaze_path, f"gazemap_{entry['v_id']}_{entry['start']}_{entry['stop']}")
+                gazemap_path = os.path.join(
+                    gaze_path,
+                    f"gazemap_{entry['v_id']}_{entry['start']}_{entry['stop']}",
+                )
+
                 np.save(gazemap_path, g)
 
-            else: 
+            else:
                 for frame in entry["frames"]:
                     idx = frame[1] - entry["start"]
                     gaze_points = [
@@ -237,10 +332,13 @@ class GazeMapLoader:
                         for i in range(idx - self.sample_rate + 1, idx + 1)
                     ]
                     g = self.point2Heatmap(
-                        gaze_points, gaussianSize=self.gaussianSize, heatmapShape=self.shape
+                        gaze_points,
+                        gaussianSize=self.gaussianSize,
+                        heatmapShape=self.shape,
+                        normalize=self.normalize,
                     )
 
-                    gaze_path = os.path.join(self.tmp_path, entry["v_id"])
+                    gaze_path = os.path.join(self.gazemap_path, entry["v_id"])
                     if not os.path.exists(gaze_path):
                         try:
                             subprocess.run(["mkdir", gaze_path])
@@ -250,13 +348,38 @@ class GazeMapLoader:
                     gazemap_path = os.path.join(gaze_path, f"gazemap_{frame[1]:010d}")
                     np.save(gazemap_path, g)
 
+        # Generate a meta-data file
+        meta = {
+            "timestamp": datetime.now().strftime("%d-%m-%Y_%H-%M-%S"),
+            "dataset": self.dataset,
+            "split": self.split,
+            "sample_rate": self.sample_rate,
+            "guassian_size": self.gaussianSize,
+            "shape": self.shape,
+            "dense_gaze": self.dense_gaze,
+            "evaluation": self.evaluation,
+        }
+
+        meta_file = open(os.path.join(self.gazemap_path, "meta.json"), "w")
+        json.dump(meta, meta_file, indent=2)
+        meta_file.close()
+
     def __call__(self, frame, **kwargs):
-        v_id, f_id = frame
+        if isinstance(frame, tuple):
+            v_id, f_id = frame
+        else:
+            v_id = frame["video_id"]
+            # dummy value for f_id
+            f_id = 0
+
+        # Construction of path must be exactly the same for training-script and evaluation-script
         if kwargs["start"] is not None and kwargs["stop"] is not None:
             file_name = f"gazemap_{v_id}_{kwargs['start']}_{kwargs['stop']}.npy"
+            # gazemap_path = os.path.join(self.gazemap_path, v_id, file_name)
         else:
             file_name = f"gazemap_{f_id:010d}.npy"
-        gazemap_path = os.path.join(self.tmp_path, v_id, file_name)
+
+        gazemap_path = os.path.join(self.gazemap_path, v_id, file_name)
 
         gazemap = np.load(gazemap_path)
         # Always copy data to avoid errors when manipulating
@@ -272,24 +395,31 @@ class EPICInteractions(VideoInteractions):
         # annots = json.load(open("data/epic/annotations.json"))
         self.d_name = d_name
         annots = json.load(
-            open(
-                os.path.join(
-                    os.path.expanduser(
-                    f"/app/data/datasets/{d_name}/annotation.json"
-
-                    )
-                )
-            )
+            open(os.path.join(f"../../data/datasets/{d_name}/annotation.json"))
         )
         self.verbs, self.nouns = annots["verbs"], annots["nouns"]
-        self.train_data, self.val_data = annots["train_clips"], annots["test_clips"]
-        self.data = self.train_data if self.split == "train" else self.val_data
+        self.train_data, self.val_data, self.test_data = (
+            annots["train_clips"],
+            annots["val_clips"],
+            annots["test_clips"],
+        )
+
+        self.images = annots[f"{self.split}_images"]
+        # self.data = self.train_data if self.split == "train" else self.val_data
+
+        if self.split == "train":
+            self.data = self.train_data
+        elif self.split == "val":
+            self.data = self.val_data
+        elif self.split == "test":
+            self.data = self.test_data
+
         print(
             "Train data: %d | Val data: %d" % (len(self.train_data), len(self.val_data))
         )
         # NOTE: First sampling
         # Use every frame. For EPIC sample_rate = 10 --> 6fps
-        for entry in self.train_data + self.val_data:
+        for entry in self.train_data + self.val_data + self.test_data:
             # Due to the potential drift at the start of an action and towards its end, the first sampling frame,
             # and the last are excluded from being candidate frames
             entry["frames"] = [
@@ -312,7 +442,26 @@ class EPICInteractions(VideoInteractions):
                 for idx, f_id in zip(frame_idxs, frame_nums)
             ]
 
-        self.gazemap_loader = GazeMapLoader(self.data, d_name, self.sample_rate, shape=(kwargs["size"], kwargs["size"]), dense_gaze=kwargs["dense_gaze"])
+        self.gazemap_loader = GazeMapLoader(
+            self.images,
+            self.data,
+            d_name,
+            self.sample_rate,
+            shape=(kwargs["size"], kwargs["size"]),
+            gaussianSize=(
+                kwargs["gaussianSize"] if kwargs["gaussianSize"] is not None else 33
+            ),
+            dense_gaze=(
+                kwargs["dense_gaze"] if kwargs["dense_gaze"] is not None else False
+            ),
+            split=self.split,
+            evaluation=False,
+            normalize=kwargs["normalize"] if kwargs["normalize"] is not None else True,
+        )
+
+        self.dense_gaze = (
+            kwargs["dense_gaze"] if kwargs["dense_gaze"] is not None else False
+        )
 
         self.rgb_loader = ImageLoader(self.root, d_name, "rgb")
         self.box_cropper = CropPerturb(self.root, d_name)
@@ -322,6 +471,8 @@ class EPICInteractions(VideoInteractions):
 
     def _load_detections(self):
 
+        # Directories that should be ignored during loading. If the number of directories increases beyond a certain point,
+        # consider changing the list to directories that should be included.
         ignore_dirs = [
             "inactive_images",
             "visualizations",
@@ -333,7 +484,10 @@ class EPICInteractions(VideoInteractions):
             "train_heatmaps",
             "val_heatmaps",
             "videos",
-            "tmp_heatmaps",
+            "gaze_heatmaps",
+            "evaluation_metrics",
+            "annotation_backup",
+            "test",
         ]
 
         participant_dirs = [
@@ -365,7 +519,6 @@ class EPICInteractions(VideoInteractions):
                 video_id = f.split("/")[-1].replace(".pkl", "").strip("_gaze")
 
                 video_detections[video_id] = detections
-        # print(self.inactive_images["cherry tomato"][str(5)])
         self.detections = video_detections
 
     @override
@@ -374,7 +527,12 @@ class EPICInteractions(VideoInteractions):
         return self.rgb_loader(v_id, f_id)
 
     def load_gazemap(self, frame, **kwargs):
-        return self.gazemap_loader(frame, start=kwargs["start"], stop=kwargs["stop"])
+        if kwargs["start"] is not None and kwargs["stop"] is not None:
+            return self.gazemap_loader(
+                frame, start=kwargs["start"], stop=kwargs["stop"]
+            )
+        else:
+            return self.gazemap_loader(frame, start=None, stop=None)
 
     @override
     def select_inactive_instances(self, entry):
@@ -430,12 +588,11 @@ class EPICInteractions(VideoInteractions):
     # variables in VideoInteractions version of this method, it is overriden here.
     #
     def __getitem__(self, index):
-        seed = torch.randint(0, 2**32-1, (1,)).item()
+        seed = torch.randint(0, 2**32 - 1, (1,)).item()
 
         torch.manual_seed(seed)
         random.seed(seed)
         np.random.seed(seed)
-
 
         entry = self.data[index]
 
@@ -489,8 +646,6 @@ class EPICInteractions(VideoInteractions):
 
             # hand_locations.append(hand_centers)
 
-            # TODO: Check if gaze points should be given in normalized coordinates or not
-
         # padded_hands = np.zeros((self.max_len, 2, 2))
         # hand_locations = np.array(hand_locations, dtype=np.float32)
         # padded_hands[: len(hand_locations), :] = hand_locations
@@ -508,7 +663,17 @@ class EPICInteractions(VideoInteractions):
         gaze_points_neg = np.array(neg_gaze, dtype=np.float32)
         hand_points_pos = np.array(pos_hands, dtype=np.float32)
         hand_points_neg = np.array(neg_hands, dtype=np.float32)
-        gazemaps = [self.load_gazemap(frame, start=entry["start"], stop=entry["stop"]) for frame in frames]
+        # Gazemaps should only be loaded when using the GazeLSTM model. TODO: Add check for which model is being used
+        if self.dense_gaze:
+            gazemaps = [
+                self.load_gazemap(frame, start=entry["start"], stop=entry["stop"])
+                for frame in frames
+            ]
+        else:
+            gazemaps = [
+                self.load_gazemap(frame, start=None, stop=None) for frame in frames
+            ]
+
         loaded_frames = [self.load_frame(frame) for frame in frames]
 
         torch.manual_seed(seed)
@@ -519,13 +684,12 @@ class EPICInteractions(VideoInteractions):
         torch.manual_seed(seed)
         random.seed(seed)
         np.random.seed(seed)
-        gazemaps = self.gazemap_transform(gazemaps) 
-        # Gaze_maps should be zero padded too? 
+        gazemaps = self.gazemap_transform(gazemaps)
+        # Gaze_maps should be zero padded too?
 
-        assert np.array(gazemaps).shape == np.array(loaded_frames).shape,\
-        f"gazemaps shape: {np.array(gazemaps).shape}, loaded_frames shape: {np.array(loaded_frames).shape}, Frames: {frames}"
-        # print("Gazemaps: ", np.array(gazemaps).shape)
-        # print("Frames: ", np.array(loaded_frames).shape)
+        assert (
+            np.array(gazemaps).shape == np.array(loaded_frames).shape
+        ), f"gazemaps shape: {np.array(gazemaps).shape}, loaded_frames shape: {np.array(loaded_frames).shape}, Frames: {frames}"
 
         instance = {
             "frames": loaded_frames,
@@ -552,8 +716,6 @@ class EPICInteractions(VideoInteractions):
         )
 
         # --------------------------------------------------------------------------#
-        # print(f"This is the length of hands: {len(hand_locations)}")
-        # print(f"This is the length of gaze: {len(padded_gaze)}")
         return instance
 
     def __len__(self):
@@ -563,37 +725,77 @@ class EPICInteractions(VideoInteractions):
 # ---------------------------------------------------------------------------------#
 
 
+# NOTE: Remember to adapt paths to the container
 class EPICHeatmaps(HeatmapDataset):
     def __init__(self, root, split, d_name, std_norm=True, **kwargs):
         self.d_name = d_name
+        self.split = split
+        self.size = kwargs["size"]
         base_path = os.path.expanduser("~/")
-        hm_file = os.path.join(
-            base_path, f"/app/data/datasets/{d_name}/heatmaps.h5"
-
-        )
+        hm_file = os.path.join(base_path, f"../../data/datasets/{d_name}/heatmaps.h5")
         # hm_file = "data/epic/heatmaps.h5"
         super().__init__(root, split, hm_file=hm_file, std_norm=std_norm)
         annot_path = os.path.join(
-            base_path, f"/app/data/datasets/{d_name}/annotation.json"
+            base_path, f"../../data/datasets/{d_name}/annotation.json"
         )
         annots = json.load(open(annot_path))
         if not os.path.exists(hm_file):
-            generate_heatmaps(annots, kernel_size=3.0, out_file=hm_file, transpose=True)
+            generate_heatmaps(
+                annots,
+                kernel_size=3.0,
+                out_file=hm_file,
+                transpose=True,
+                split=self.split,
+            )
 
         self.verbs = annots["verbs"]
-        self.train_data, self.val_data = annots["train_images"], annots["test_images"]
-        self.data = self.train_data if self.split == "train" else self.val_data
+        self.train_data, self.val_data, self.test_data = (
+            annots["train_images"],
+            annots["val_images"],
+            annots["test_images"],
+        )
+        self.train_clips, self.val_clips, self.test_clips = (
+            annots["train_clips"],
+            annots["val_clips"],
+            annots["test_clips"],
+        )
+        # self.data = self.train_data if self.split == "train" else self.val_data
+
+        if self.split == "train":
+            self.data = self.train_data
+            self.clips = self.train_clips
+        elif self.split == "val":
+            self.data = self.val_data
+            self.clips = self.val_clips
+        elif self.split == "test":
+            self.data = self.test_data
+            self.clips = self.test_clips
+
+        self.gazemap_loader = GazeMapLoader(
+            self.data,
+            self.clips,
+            d_name,
+            kwargs["sample_rate"],
+            shape=(kwargs["size"], kwargs["size"]),
+            gaussianSize=kwargs["gaussianSize"],
+            dense_gaze=kwargs["dense_gaze"],
+            split=self.split,
+            evaluation=True,
+            normalize=kwargs["normalize"],
+        )
         print(
-            "%d train images, %d test images"
-            % (len(self.train_data), len(self.val_data))
+            "%d train images, %d val images, %d test imags"
+            % (len(self.train_data), len(self.val_data), len(self.test_data))
         )
 
-    def load_image_heatmap(self, entry, **kwargs):
-        splitName = entry["image"][0].split("_")
-        video_id = splitName[0] + "_" + splitName[1]
+    def load_gazemap(self, entry, start=None, stop=None):
+        return self.gazemap_loader(entry, start=start, stop=stop)
+
+    def load_image_heatmap(self, entry):
+        # splitName = entry["image"][0].split("_")
+        video_id = entry["video_id"]
         path = os.path.join(
-            os.path.expanduser("~/"),
-            f"/app/data/datasets/{self.d_name}/inactive_images",
+            f"../../data/datasets/{self.d_name}/inactive_images",
             video_id,
             entry["image"][0],
         )
@@ -606,9 +808,34 @@ class EPICHeatmaps(HeatmapDataset):
 
         heatmap = self.heatmaps(hm_key)
 
-        crop, heatmap = self.pair_transform(crop, heatmap, size=kwargs["size"])
+        # Org: crop, heatmap. Crop is no longer used. It was removed due to incompatibility with current application
+        _, heatmap = self.pair_transform(crop, heatmap, size=self.size)
 
-        return crop, heatmap
+        return _, heatmap
+
+    def __getitem__(self, index):
+
+        if self.heatmaps is None:
+            self.heatmaps = self.init_hm_loader()
+
+        entry = self.data[index]
+        clip = self.clips[index]
+        # If visible error from pyright, ignore. Only incorrect type reading in the background
+        img, heatmap = self.load_image_heatmap(entry)
+        # Use start and stop values from the corresponding clip
+        gazemap = self.load_gazemap(entry, start=clip["start"], stop=clip["stop"])
+
+        instance = {
+            "img": img,
+            "verb": entry["verb"],
+            "heatmap": heatmap,
+            "gazemap": gazemap,
+            "image_name": entry["image"][0],
+        }
+        return instance
+
+    def __len__(self):
+        return len(self.data)
 
 
 # ---------------------------------------------------------------------------------#
