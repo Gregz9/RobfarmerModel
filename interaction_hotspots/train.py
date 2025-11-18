@@ -115,7 +115,7 @@ if not args.test:
     else:
         checkpoint_path = f"/app/data/datasets/{args.dset}/checkpoints/{args.model}_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}_finetuned_{args.max_epochs}_epochs"
 
-# NOTE: If directories do not exist, create them
+    # NOTE: If directories do not exist, create them
     if not os.path.exists(checkpoint_path):
         try:
             if not args.test:
@@ -123,7 +123,7 @@ if not args.test:
         except Exception as e:
             print(f"Error while creating directory: {e}")
 
-#12-11-2025_11-40-13_GazeLSTM_train_validate
+# 12-11-2025_11-40-13_GazeLSTM_train_validate
 
 if not args.test and not args.validate:
     metrics_path = f"/app/data/datasets/{args.dset}/training_metrics/{args.model}_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}_train_{args.max_epochs}_epochs"
@@ -455,7 +455,7 @@ def test_validate(epoch, writer, loader, split="val", class_weights=None) -> Los
     # Collect predictions and targets for metrics calculation
     all_predictions = []
     all_targets = []
-    
+
     with torch.no_grad():
         for batch in loader:
             batch = util.batch_cuda(batch)
@@ -467,11 +467,6 @@ def test_validate(epoch, writer, loader, split="val", class_weights=None) -> Los
             for k, v in loss_dict.items():
                 loss_meters[f"{split}_" + k].add(v.item())
             loss_meters[f"{split}_total_loss"].add(loss.item())
-
-            # Backward pass not required during validation or testing
-            # optimizer.zero_grad()
-            # loss.backward()
-            # optimizer.step()
 
             _, pred_idx = pred.max(1)
             correct = (pred_idx == batch["verb"]).float().sum()
@@ -526,8 +521,12 @@ def test_validate(epoch, writer, loader, split="val", class_weights=None) -> Los
         # Calculate and log classification metrics
         metrics = calculate_classification_metrics(all_predictions, all_targets)
         if metrics:
-            writer.add_scalar(f"{split.capitalize()} F1 Macro", metrics["f1_macro"], epoch)
-            writer.add_scalar(f"{split.capitalize()} F1 Micro", metrics["f1_micro"], epoch)
+            writer.add_scalar(
+                f"{split.capitalize()} F1 Macro", metrics["f1_macro"], epoch
+            )
+            writer.add_scalar(
+                f"{split.capitalize()} F1 Micro", metrics["f1_micro"], epoch
+            )
             writer.add_scalar(
                 f"{split.capitalize()} F1 Weighted", metrics["f1_weighted"], epoch
             )
@@ -535,7 +534,9 @@ def test_validate(epoch, writer, loader, split="val", class_weights=None) -> Los
                 f"{split.capitalize()} Recall Macro", metrics["recall_macro"], epoch
             )
             writer.add_scalar(
-                f"{split.capitalize()} Precision Macro", metrics["precision_macro"], epoch
+                f"{split.capitalize()} Precision Macro",
+                metrics["precision_macro"],
+                epoch,
             )
 
             # Store metrics in loss_meters for JSON output
@@ -629,6 +630,7 @@ def save_metrics(metrics, loss_file_name) -> None:
     )
     with open(loss_file, "w") as metrics_file:
         json.dump(metrics, metrics_file, indent=4)
+
 
 start_time_loading = time.perf_counter()
 # Dry run to find dimensions for the AvgPool2d kernel
@@ -752,8 +754,8 @@ for epoch in range(start_epoch, args.max_epochs + 1):
                 "total_loss": float(train_metrics["total_loss"].value()[0]),
                 "cls_loss": float(train_metrics["cls_loss"].value()[0]),
                 "ant_loss": float(train_metrics["ant_loss"].value()[0]),
-                "aux_loss": float(train_metrics["aux_loss"].value()[0]), 
-                "attention_loss": float(train_metrics["attention_loss"].value()[0]), 
+                "aux_loss": float(train_metrics["aux_loss"].value()[0]),
+                "attention_loss": float(train_metrics["attention_loss"].value()[0]),
                 "accuracy": float(train_metrics["bacc %"].value()[0]),
             }
 
@@ -840,7 +842,7 @@ for epoch in range(start_epoch, args.max_epochs + 1):
         metrics = test_validate(1, writer, testloader, split="test")
 
         test_metrics_dict = {
-            "checkpoint" : args.checkpoint,
+            "checkpoint": args.checkpoint,
             "epoch": epoch,
             "total_loss": float(metrics["test_total_loss"].value()[0]),
             "cls_loss": float(metrics["test_cls_loss"].value()[0]),
@@ -918,7 +920,9 @@ for epoch in range(start_epoch, args.max_epochs + 1):
 
 end_time_full_training = time.perf_counter()
 
-print(f"Time taken to train model for {args.max_epochs} epochs: {end_time_full_training - start_time_full_training}")
+print(
+    f"Time taken to train model for {args.max_epochs} epochs: {end_time_full_training - start_time_full_training}"
+)
 # Close files
 writer.flush()
 writer.close()
