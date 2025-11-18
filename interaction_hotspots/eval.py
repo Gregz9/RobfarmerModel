@@ -232,17 +232,18 @@ if __name__ == "__main__":
     #     elif key == 81:
     #         idx = idx - 1
 
-    checkpoint_path = os.path.join(
-        f"../../data/datasets/Robofarmer-II/checkpoints/{args.checkpoint}/{args.model_type}.pt"
-    )
-    heatmaps = generate_heatmaps(
-        args.dset,
-        dataset,
-        dataloader,
-        checkpoint_path,
-        args.batch_size,
-        size=args.heatmap_res,
-    )
+    if not args.ground_vs_model:
+        checkpoint_path = os.path.join(
+            f"../../data/datasets/Robofarmer-II/checkpoints/{args.checkpoint}/{args.model_type}.pt"
+        )
+        heatmaps = generate_heatmaps(
+            args.dset,
+            dataset,
+            dataloader,
+            checkpoint_path,
+            args.batch_size,
+            size=args.heatmap_res,
+        )
     # gt = torch.load(
     #     os.path.expanduser(f"../../data/datasets/{args.dset}/output/gt.pth")
     # )

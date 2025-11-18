@@ -68,17 +68,20 @@ def default_transform(split, size):
 
 import interaction_hotspots.utils.gtransforms as gtransforms
 
+
 def gazemap_transform(split, max_len, size):
 
-    if split == "train": 
-        transform = transforms.Compose([
-            gtransforms.GroupResize(size),
-            # gtransforms.GroupResize(256),
-            # gtransforms.GroupRandomCrop(224),
-            gtransforms.GroupRandomHorizontalFlip(),
-            gtransforms.ToTensor(),
-            gtransforms.ZeroPad(max_len)
-        ])
+    if split == "train":
+        transform = transforms.Compose(
+            [
+                gtransforms.GroupResize(size),
+                # gtransforms.GroupResize(256),
+                # gtransforms.GroupRandomCrop(224),
+                gtransforms.GroupRandomHorizontalFlip(),
+                gtransforms.ToTensor(),
+                gtransforms.ZeroPad(max_len),
+            ]
+        )
     elif split == "val":
         transform = transforms.Compose(
             [
@@ -92,6 +95,7 @@ def gazemap_transform(split, max_len, size):
 
     return transform
 
+
 def clip_transform(split, max_len, size):
 
     mean, std = default_mean_std()
@@ -99,7 +103,6 @@ def clip_transform(split, max_len, size):
     if split == "train":
         transform = transforms.Compose(
             [
-                
                 gtransforms.GroupResize(size),
                 # gtransforms.GroupResize(256),
                 # gtransforms.GroupRandomCrop(224),
@@ -218,7 +221,7 @@ class PairedTransform:
 
     def __call__(self, image, heatmap, **kwargs):
 
-        if self.split == "train":
+        if self.split == "train" and kwargs["eval"] is not None:
             image, heatmap = self.train_transform(image, heatmap, size=kwargs["size"])
         elif self.split == "val" or self.split == "test":
             image, heatmap = self.val_transform(image, heatmap, size=kwargs["size"])

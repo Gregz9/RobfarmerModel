@@ -138,6 +138,8 @@ def calculate_classification_metrics(all_preds, all_targets, num_classes=None):
     Returns:
         Dictionary containing all metrics
     """
+    .strftime('%d-%m-%Y_%H-%M-%S')
+
     if len(all_preds) == 0 or len(all_targets) == 0:
         return {}
 

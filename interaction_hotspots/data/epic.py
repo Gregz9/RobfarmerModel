@@ -731,13 +731,11 @@ class EPICHeatmaps(HeatmapDataset):
         self.d_name = d_name
         self.split = split
         self.size = kwargs["size"]
-        base_path = os.path.expanduser("~/")
-        hm_file = os.path.join(base_path, f"../../data/datasets/{d_name}/heatmaps.h5")
+        # base_path = os.path.expanduser("~/")
+        hm_file = f"../../data/datasets/{d_name}/heatmaps.h5"
         # hm_file = "data/epic/heatmaps.h5"
         super().__init__(root, split, hm_file=hm_file, std_norm=std_norm)
-        annot_path = os.path.join(
-            base_path, f"../../data/datasets/{d_name}/annotation.json"
-        )
+        annot_path = f"../../data/datasets/{d_name}/annotation.json"
         annots = json.load(open(annot_path))
         if not os.path.exists(hm_file):
             generate_heatmaps(
@@ -809,7 +807,7 @@ class EPICHeatmaps(HeatmapDataset):
         heatmap = self.heatmaps(hm_key)
 
         # Org: crop, heatmap. Crop is no longer used. It was removed due to incompatibility with current application
-        _, heatmap = self.pair_transform(crop, heatmap, size=self.size)
+        _, heatmap = self.pair_transform(crop, heatmap, size=self.size, eval=True)
 
         return _, heatmap
 
