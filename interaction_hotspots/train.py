@@ -23,15 +23,23 @@ from sklearn.metrics import (
     precision_score,
     classification_report,
 )
+import time
 
-from interaction_hotspots.models import rnn, gaze_rnn, cons_rnn, backbones
+from interaction_hotspots.models import (
+    rnn,
+    # gaze_rnn,
+    cons_rnn,
+    cons_rnn_gradcam,
+    backbones,
+)
 from utils import util
 
 # NOTE: Possible model choices
 models = {
     "LSTM": rnn.frame_lstm,
-    "BaseGazeLSTM": gaze_rnn.frame_lstm_gaze,
+    # "BaseGazeLSTM": gaze_rnn.frame_lstm_gaze,
     "GazeLSTM": cons_rnn.cons_frame_lstm,
+    "GazeLSTMGrad": cons_rnn_gradcam.cons_frame_lstm,
 }
 
 # NOTE: Defining custom type
@@ -100,16 +108,30 @@ parser.add_argument("--workers", type=int, default=8, help="Workers for dataload
 parser.add_argument("--log_every", default=10, type=int, help="Logging frequency")
 args = parser.parse_args()
 
-# NOTE: Storing locations
-checkpoint_path = f"/app/data/datasets/{args.dset}/checkpoints/{args.model}_{datetime.now().strftime('%d%m%Y%H%M')}"
-# NOTE: If directories do not exist, create them
-if not os.path.exists(checkpoint_path):
-    try:
-        subprocess.run(["mkdir", checkpoint_path])
-    except Exception as e:
-        print(f"Error while creating directory: {e}")
+if not args.test:
+    # NOTE: Storing locations
+    if not args.finetune:
+        checkpoint_path = f"/app/data/datasets/{args.dset}/checkpoints/{args.model}_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}_{args.max_epochs}_epochs"
+    else:
+        checkpoint_path = f"/app/data/datasets/{args.dset}/checkpoints/{args.model}_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}_finetuned_{args.max_epochs}_epochs"
 
-metrics_path = f"/app/data/datasets/{args.dset}/training_metrics/"
+# NOTE: If directories do not exist, create them
+    if not os.path.exists(checkpoint_path):
+        try:
+            if not args.test:
+                subprocess.run(["mkdir", checkpoint_path])
+        except Exception as e:
+            print(f"Error while creating directory: {e}")
+
+#12-11-2025_11-40-13_GazeLSTM_train_validate
+
+if not args.test and not args.validate:
+    metrics_path = f"/app/data/datasets/{args.dset}/training_metrics/{args.model}_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}_train_{args.max_epochs}_epochs"
+if args.validate and not args.test:
+    metrics_path = f"/app/data/datasets/{args.dset}/training_metrics/{args.model}_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}_train_validate_{args.max_epochs}_epochs"
+else:
+    metrics_path = f"/app/data/datasets/{args.dset}/training_metrics/{args.model}_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}_test_{args.checkpoint.split('/')[-1].strip('.pt')}"
+
 if not os.path.exists(metrics_path):
     try:
         subprocess.run(["mkdir", metrics_path])
@@ -118,8 +140,9 @@ if not os.path.exists(metrics_path):
 
 loss_file = os.path.join(
     metrics_path,
-    f"{args.model}_{datetime.now().strftime('%d%m%Y%H%M')}.json",
+    f"{args.model}_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.json",
 )
+
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -138,8 +161,6 @@ def calculate_classification_metrics(all_preds, all_targets, num_classes=None):
     Returns:
         Dictionary containing all metrics
     """
-    .strftime('%d-%m-%Y_%H-%M-%S')
-
     if len(all_preds) == 0 or len(all_targets) == 0:
         return {}
 
@@ -212,7 +233,7 @@ def save_model(epoch, model, optimizer, checkpoint_path, suffix="loss"):
 
     f = open(os.path.join(checkpoint_path, "meta.json"), "w")
     metadata = {
-        "start_time": datetime.now().strftime("%d%m%Y%H%M"),
+        "start_time": datetime.now().strftime(("%d-%m-%Y_%H-%M")),
         "model_name": model.name,
         "dataset": args.dset,
         "epoch": epoch,
@@ -234,59 +255,109 @@ def save_model(epoch, model, optimizer, checkpoint_path, suffix="loss"):
 
 # NOTE: Dataset classes is equivalent to the verb classes
 def load_params(model, checkpoint_path, dataset_classes, fine_tuning=False):
-    from collections import OrderedDict
-
-    # NOTE: Do not load any params
+    # Don't load params if neither finetuning nor testing
     if not fine_tuning and not args.test:
         return model
 
-    saved_params = OrderedDict()
+    # Load checkpoint
     checkpoint = torch.load(checkpoint_path)
-    if "net" in checkpoint.keys():
-        saved_params = checkpoint["net"]
-    elif "state_dict" in checkpoint.keys():
-        saved_params = checkpoint["state_dict"]
+    saved_params = checkpoint.get("state_dict", checkpoint.get("net", checkpoint))
 
-    if args.test:
-        model.load_state_dict(saved_params)
-        return model
+    # Load all compatible parameters
+    model.load_state_dict(saved_params, strict=False)
+    return model
 
-    custom_state_dict = model.state_dict()
-    # NOTE: Check the output dimensions of the model and saved parameters
-    if not fine_tuning:
-        try:
-            model.load_state_dict(saved_params)
-        except Exception as e:
-            print(f"Error while loading model: {e}")
 
-    if fine_tuning:
-        # Only load layer3 and layer4 from the backbone during fine-tuning
-        for key, value in saved_params.items():
-            if key in custom_state_dict:
-                # Skip final classification layers
-                if "fc.weight" in key or "fc.bias" in key:
-                    continue
-                # Only load layer3 and layer4 from backbone
-                elif (
-                    "backbone.rnet.layer3" in key or "backbone.rnet.layer4" in key
-                ) and custom_state_dict[key].shape == value.shape:
-                    custom_state_dict[key] = value
-                    print(f"Loaded backbone layer: {key}")
-                # Load all non-backbone parameters (RNN layers, etc.)
-                elif (
-                    "backbone.rnet" not in key
-                    and custom_state_dict[key].shape == value.shape
-                ):
-                    custom_state_dict[key] = value
-                else:
-                    print(f"Skipping layer (fine-tuning mode): {key}")
+def freeze_layers_for_finetuning(model, freeze_early_cnn=True, freeze_lstm=False):
+    """
+    Freeze layers for fine-tuning based on academic best practices.
 
-        # Initialize final classification layers
-        with torch.no_grad():
-            nn.init.xavier_normal(model.fc.weight)
-            nn.init.zeros_(model.fc.bias)
+    Args:
+        model: The neural network model
+        freeze_early_cnn: If True, freeze all CNN layers except backbone.rnet.layer4
+        freeze_lstm: If True, freeze LSTM layers (not recommended)
+    """
+    total_params = 0
+    frozen_params = 0
+    trainable_params = 0
 
-        model.load_state_dict(custom_state_dict)
+    # Layers that should remain trainable (everything else in CNN is frozen)
+
+    for name, param in model.named_parameters():
+        total_params += param.numel()
+
+        # CNN backbone (ResNet + lateral convs)
+        if freeze_early_cnn and name.startswith("backbone."):
+            # Train only the final ResNet block (layer4)
+            if "backbone.rnet.layer4.2" in name:
+                param.requires_grad = True
+                trainable_params += param.numel()
+                print(f"Trainable CNN layer: {name}")
+            else:
+                param.requires_grad = False
+                frozen_params += param.numel()
+                print(f"Frozen CNN layer: {name}")
+
+        # LSTM layers
+        elif "rnn" in name:
+            if freeze_lstm:
+                param.requires_grad = False
+                frozen_params += param.numel()
+                print(f"Frozen LSTM layer: {name}")
+            else:
+                param.requires_grad = True
+                trainable_params += param.numel()
+                print(f"Trainable LSTM layer: {name}")
+
+        # Classification head
+        elif "fc" in name:
+            param.requires_grad = True
+            trainable_params += param.numel()
+            print(f"Trainable classifier layer: {name}")
+
+        # Projection or anticipation layers
+        elif "project" in name:
+            param.requires_grad = True
+            trainable_params += param.numel()
+            print(f"Trainable projection layer: {name}")
+
+        # Attention parameters
+        elif "attention_sigma" in name:
+            param.requires_grad = True
+            trainable_params += param.numel()
+            print(f"Trainable attention parameter: {name}")
+
+        # LSTM hidden state parameters
+        elif any(lstm_param in name for lstm_param in ["h0", "c0"]):
+            if freeze_lstm:
+                param.requires_grad = False
+                frozen_params += param.numel()
+                print(f"Frozen LSTM hidden state: {name}")
+            else:
+                param.requires_grad = True
+                trainable_params += param.numel()
+                print(f"Trainable LSTM hidden state: {name}")
+
+        else:
+            # Default: leave trainable if not otherwise caught
+            if param.requires_grad:
+                trainable_params += param.numel()
+                print(f"Trainable (other): {name}")
+            else:
+                frozen_params += param.numel()
+                print(f"Frozen (other): {name}")
+
+    print(f"\n{'='*50}")
+    print(f"LAYER FREEZING SUMMARY")
+    print(f"{'='*50}")
+    print(f"Total parameters: {total_params:,}")
+    print(
+        f"Frozen parameters: {frozen_params:,} ({frozen_params/total_params*100:.1f}%)"
+    )
+    print(
+        f"Trainable parameters: {trainable_params:,} ({trainable_params/total_params*100:.1f}%)"
+    )
+    print(f"{'='*50}\n")
 
     return model
 
@@ -346,7 +417,8 @@ def train(epoch, writer, loader, class_weights=None) -> LossMeters:
 
     writer.add_scalar("Avg. Total Loss", loss_meters["total_loss"].value()[0], epoch)
     writer.add_scalar("Avg. Batch Acc.", loss_meters["bacc %"].value()[0], epoch)
-    # writer.add_scalar("Avg. Aux. Loss", loss_meters["aux_loss"].value()[0], epoch)
+    # if args.model == "LSTM":
+    writer.add_scalar("Avg. Aux. Loss", loss_meters["aux_loss"].value()[0], epoch)
     writer.add_scalar(
         "Avg. Attention Loss", loss_meters["attention_loss"].value()[0], epoch
     )
@@ -383,94 +455,96 @@ def test_validate(epoch, writer, loader, split="val", class_weights=None) -> Los
     # Collect predictions and targets for metrics calculation
     all_predictions = []
     all_targets = []
+    
+    with torch.no_grad():
+        for batch in loader:
+            batch = util.batch_cuda(batch)
+            pred, loss_dict = net(batch, class_weights=class_weights)
 
-    for batch in loader:
-        batch = util.batch_cuda(batch)
-        pred, loss_dict = net(batch, class_weights=class_weights)
+            loss_dict = {k: v.mean() for k, v in loss_dict.items()}
+            loss = sum(loss_dict.values())
 
-        loss_dict = {k: v.mean() for k, v in loss_dict.items()}
-        loss = sum(loss_dict.values())
+            for k, v in loss_dict.items():
+                loss_meters[f"{split}_" + k].add(v.item())
+            loss_meters[f"{split}_total_loss"].add(loss.item())
 
-        for k, v in loss_dict.items():
-            loss_meters[f"{split}_" + k].add(v.item())
-        loss_meters[f"{split}_total_loss"].add(loss.item())
+            # Backward pass not required during validation or testing
+            # optimizer.zero_grad()
+            # loss.backward()
+            # optimizer.step()
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+            _, pred_idx = pred.max(1)
+            correct = (pred_idx == batch["verb"]).float().sum()
+            batch_acc = correct / pred.shape[0]
+            loss_meters[f"{split}_bacc %"].add(batch_acc)
 
-        _, pred_idx = pred.max(1)
-        correct = (pred_idx == batch["verb"]).float().sum()
-        batch_acc = correct / pred.shape[0]
-        loss_meters[f"{split}_bacc %"].add(batch_acc)
+            # Collect predictions and targets for metric calculation
+            all_predictions.extend(pred_idx.cpu().numpy().tolist())
+            all_targets.extend(batch["verb"].cpu().numpy().tolist())
 
-        # Collect predictions and targets for metric calculation
-        all_predictions.extend(pred_idx.cpu().numpy().tolist())
-        all_targets.extend(batch["verb"].cpu().numpy().tolist())
+            if iteration % args.log_every == 0:
+                log_str = "epoch: %d + %d/%d | " % (epoch, iteration, total_iters)
+                log_str += " | ".join(
+                    ["%s: %.3f" % (k, v.value()[0]) for k, v in loss_meters.items()]
+                )
+                logger.info(log_str)
 
-        if iteration % args.log_every == 0:
-            log_str = "epoch: %d + %d/%d | " % (epoch, iteration, total_iters)
-            log_str += " | ".join(
-                ["%s: %.3f" % (k, v.value()[0]) for k, v in loss_meters.items()]
+            if iteration % len(loader) == 0 and iteration != 0:
+                log_str = "epoch: %d + %d/%d | " % (epoch, iteration, total_iters)
+                log_str += " | ".join(
+                    ["%s: %.3f" % (k, v.value()[0]) for k, v in loss_meters.items()]
+                )
+            iteration += 1
+
+        writer.add_scalar(
+            f"{split.capitalize()} Avg. Total Loss",
+            loss_meters[f"{split}_total_loss"].value()[0],
+            epoch,
+        )
+        writer.add_scalar(
+            f"{split.capitalize()} Avg. Batch Acc.",
+            loss_meters[f"{split}_bacc %"].value()[0],
+            epoch,
+        )
+
+        writer.add_scalar(
+            f"{split.capitalize()} Avg. Attention Loss",
+            loss_meters[f"{split}_attention_loss"].value()[0],
+            epoch,
+        )
+        writer.add_scalar(
+            f"{split.capitalize()} Avg. Class Loss",
+            loss_meters[f"{split}_cls_loss"].value()[0],
+            epoch,
+        )
+        writer.add_scalar(
+            f"{split.capitalize()} Avg. Ant. Loss",
+            loss_meters[f"{split}_ant_loss"].value()[0],
+            epoch,
+        )
+
+        # Calculate and log classification metrics
+        metrics = calculate_classification_metrics(all_predictions, all_targets)
+        if metrics:
+            writer.add_scalar(f"{split.capitalize()} F1 Macro", metrics["f1_macro"], epoch)
+            writer.add_scalar(f"{split.capitalize()} F1 Micro", metrics["f1_micro"], epoch)
+            writer.add_scalar(
+                f"{split.capitalize()} F1 Weighted", metrics["f1_weighted"], epoch
             )
-            logger.info(log_str)
-
-        if iteration % len(loader) == 0 and iteration != 0:
-            log_str = "epoch: %d + %d/%d | " % (epoch, iteration, total_iters)
-            log_str += " | ".join(
-                ["%s: %.3f" % (k, v.value()[0]) for k, v in loss_meters.items()]
+            writer.add_scalar(
+                f"{split.capitalize()} Recall Macro", metrics["recall_macro"], epoch
             )
-        iteration += 1
+            writer.add_scalar(
+                f"{split.capitalize()} Precision Macro", metrics["precision_macro"], epoch
+            )
 
-    writer.add_scalar(
-        f"{split.capitalize()} Avg. Total Loss",
-        loss_meters[f"{split}_total_loss"].value()[0],
-        epoch,
-    )
-    writer.add_scalar(
-        f"{split.capitalize()} Avg. Batch Acc.",
-        loss_meters[f"{split}_bacc %"].value()[0],
-        epoch,
-    )
-
-    writer.add_scalar(
-        f"{split.capitalize()} Avg. Attention Loss",
-        loss_meters[f"{split}_attention_loss"].value()[0],
-        epoch,
-    )
-    writer.add_scalar(
-        f"{split.capitalize()} Avg. Class Loss",
-        loss_meters[f"{split}_cls_loss"].value()[0],
-        epoch,
-    )
-    writer.add_scalar(
-        f"{split.capitalize()} Avg. Ant. Loss",
-        loss_meters[f"{split}_ant_loss"].value()[0],
-        epoch,
-    )
-
-    # Calculate and log classification metrics
-    metrics = calculate_classification_metrics(all_predictions, all_targets)
-    if metrics:
-        writer.add_scalar(f"{split.capitalize()} F1 Macro", metrics["f1_macro"], epoch)
-        writer.add_scalar(f"{split.capitalize()} F1 Micro", metrics["f1_micro"], epoch)
-        writer.add_scalar(
-            f"{split.capitalize()} F1 Weighted", metrics["f1_weighted"], epoch
-        )
-        writer.add_scalar(
-            f"{split.capitalize()} Recall Macro", metrics["recall_macro"], epoch
-        )
-        writer.add_scalar(
-            f"{split.capitalize()} Precision Macro", metrics["precision_macro"], epoch
-        )
-
-        # Store metrics in loss_meters for JSON output
-        loss_meters[f"{split}_f1_macro"].add(metrics["f1_macro"])
-        loss_meters[f"{split}_f1_micro"].add(metrics["f1_micro"])
-        loss_meters[f"{split}_f1_weighted"].add(metrics["f1_weighted"])
-        loss_meters[f"{split}_recall_macro"].add(metrics["recall_macro"])
-        loss_meters[f"{split}_precision_macro"].add(metrics["precision_macro"])
-        loss_meters[f"{split}_confusion_matrix"] = metrics["confusion_matrix"]
+            # Store metrics in loss_meters for JSON output
+            loss_meters[f"{split}_f1_macro"].add(metrics["f1_macro"])
+            loss_meters[f"{split}_f1_micro"].add(metrics["f1_micro"])
+            loss_meters[f"{split}_f1_weighted"].add(metrics["f1_weighted"])
+            loss_meters[f"{split}_recall_macro"].add(metrics["recall_macro"])
+            loss_meters[f"{split}_precision_macro"].add(metrics["precision_macro"])
+            loss_meters[f"{split}_confusion_matrix"] = metrics["confusion_matrix"]
 
     return loss_meters
 
@@ -556,7 +630,7 @@ def save_metrics(metrics, loss_file_name) -> None:
     with open(loss_file, "w") as metrics_file:
         json.dump(metrics, metrics_file, indent=4)
 
-
+start_time_loading = time.perf_counter()
 # Dry run to find dimensions for the AvgPool2d kernel
 backbone = backbones.dr50_n28()
 backbone.eval()
@@ -593,7 +667,17 @@ net = net(
 # Load params - Remember to load pre-trained params for testing
 if args.test and not args.checkpoint:
     raise ValueError("--checkpoint argument is required when --test flag is set")
-net = load_params(net, args.checkpoint, len(trainset.verbs), args.finetune)
+
+if args.checkpoint is not None and not args.finetune:
+    print(f"Loading model from checkpoint: {args.checkpoint}")
+    net = load_params(net, args.checkpoint, len(trainset.verbs), args.finetune)
+
+if args.finetune:
+    print(f"\n{'='*60}")
+    print(f"APPLYING FINE-TUNING LAYER FREEZING")
+    print(f"{'='*60}")
+    net = freeze_layers_for_finetuning(net, freeze_early_cnn=True, freeze_lstm=False)
+
 
 # NOTE: Transfer the model to GPU
 net.cuda()
@@ -615,18 +699,22 @@ if not args.test:
 
 # Paths for backup of params and metrics
 try:
-    subprocess.run(["mkdir", checkpoint_path])
+    if args.test:
+        subprocess.run(["mkdir", checkpoint_path])
     subprocess.run(["mkdir", metrics_path])
 except:
     print("COULD NOT CREATE DIRECTORIES!")
 
 log_path = os.path.join(
-    f"/app/data/dataset/{args.dset}/runs",
-    f"{args.model}_{datetime.now().strftime('%d%m%Y%H%M')}",
+    f"/app/data/datasets/{args.dset}/runs",
+    f"{args.model}_{datetime.now().strftime('%d-%m-%Y_%H-%M')}",
 )
 
 writer = SummaryWriter(log_dir=log_path)
 
+stop_time_loading = time.perf_counter()
+
+print(f"Time taken to load data for model: {stop_time_loading - start_time_loading}")
 # Containers for dumping of metrics
 training_metrics = []
 validation_metrics = []
@@ -636,24 +724,38 @@ test_metrics = []
 best_loss = np.inf
 best_acc = 0
 start_epoch = 1  # or load checkpoint
-loss_file_name = f"{datetime.now().strftime('%d%m%Y%H%M')}_{args.max_epochs}_"
+loss_file_name = f"{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}_{args.max_epochs}_"
+
+start_time_full_training = time.perf_counter()
 
 for epoch in range(start_epoch, args.max_epochs + 1):
-    logger.info("LR = %.2E" % scheduler.get_lr()[0])
+    if not args.test or args.validate:
+        logger.info("LR = %.2E" % scheduler.get_lr()[0])
 
     # NOTE: Auxilary loss is exlcueded at it does not imporove model perfomance
     #
     if not args.test:
         train_metrics = train(epoch, writer, trainloader, class_weights)
 
-        metrics_dict = {
-            "epoch": epoch,
-            "total_loss": float(train_metrics["total_loss"].value()[0]),
-            "cls_loss": float(train_metrics["cls_loss"].value()[0]),
-            "ant_loss": float(train_metrics["ant_loss"].value()[0]),
-            # "aux_loss": float(train_metrics["aux_loss"].value()[0]),
-            "accuracy": float(train_metrics["bacc %"].value()[0]),
-        }
+        if args.model == "LSTM":
+            metrics_dict = {
+                "epoch": epoch,
+                "total_loss": float(train_metrics["total_loss"].value()[0]),
+                "cls_loss": float(train_metrics["cls_loss"].value()[0]),
+                "ant_loss": float(train_metrics["ant_loss"].value()[0]),
+                "aux_loss": float(train_metrics["aux_loss"].value()[0]),
+                "accuracy": float(train_metrics["bacc %"].value()[0]),
+            }
+        else:
+            metrics_dict = {
+                "epoch": epoch,
+                "total_loss": float(train_metrics["total_loss"].value()[0]),
+                "cls_loss": float(train_metrics["cls_loss"].value()[0]),
+                "ant_loss": float(train_metrics["ant_loss"].value()[0]),
+                "aux_loss": float(train_metrics["aux_loss"].value()[0]), 
+                "attention_loss": float(train_metrics["attention_loss"].value()[0]), 
+                "accuracy": float(train_metrics["bacc %"].value()[0]),
+            }
 
         # Add classification metrics if available
         if "f1_macro" in train_metrics:
@@ -696,7 +798,9 @@ for epoch in range(start_epoch, args.max_epochs + 1):
             "total_loss": float(val_metrics["val_total_loss"].value()[0]),
             "cls_loss": float(val_metrics["val_cls_loss"].value()[0]),
             "ant_loss": float(val_metrics["val_ant_loss"].value()[0]),
-            # "aux_loss": float(val_metrics["aux_loss"].value()[0]),
+            "aux_loss": float(
+                val_metrics["aux_loss"].value()[0]
+            ),  # Not recorded during validation
             "accuracy": float(val_metrics["val_bacc %"].value()[0]),
         }
 
@@ -733,9 +837,10 @@ for epoch in range(start_epoch, args.max_epochs + 1):
             save_model(epoch, net, optimizer, checkpoint_path, "best_accuracy")
 
     if args.test:
-        metrics = test_validate(1, writer, valloader, split="test")
+        metrics = test_validate(1, writer, testloader, split="test")
 
         test_metrics_dict = {
+            "checkpoint" : args.checkpoint,
             "epoch": epoch,
             "total_loss": float(metrics["test_total_loss"].value()[0]),
             "cls_loss": float(metrics["test_cls_loss"].value()[0]),
@@ -811,6 +916,9 @@ for epoch in range(start_epoch, args.max_epochs + 1):
         )
 
 
+end_time_full_training = time.perf_counter()
+
+print(f"Time taken to train model for {args.max_epochs} epochs: {end_time_full_training - start_time_full_training}")
 # Close files
 writer.flush()
 writer.close()
